@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# 若在仓库根目录生成本地抓取目录（默认多在 ~/.openclaw/workspace/）
+zhihu_articles_*/
+
+# 临时与备份
+*.tmp
+~$*
+
+# OS
+.DS_Store
+Thumbs.db
