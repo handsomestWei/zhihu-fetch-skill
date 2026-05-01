@@ -1,7 +1,7 @@
 ---
 name: zhihu-fetcher
 description: "知乎收藏夹与文章内容抓取：API/Playwright 多级降级、Cookie 持久化与保活、批量正文与图片、断点续传、可选写入 Obsidian。| Zhihu collection scraping, batch article fetch, Obsidian export."
-version: "1.0.0"
+version: "1.1.0"
 user-invocable: true
 argument-hint: "[可选：收藏夹 URL 或 ID、单篇链接、输出目录、Vault 路径]"
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
@@ -159,17 +159,54 @@ images: 5
 
 | # | 现象 / 原因 | 处理 |
 |---|-------------|------|
-| 1 | **Cookie 失效**：标题「安全验证」、`/account/unhuman` | 持久化上下文 + 内置保活；仍失败则 **`zhihu_relogin.py`** |
+| 1 | **Cookie 失效**：标题「安全验证」、`/account/unhuman` | **自动恢复**：脚本内置 3 次重试（激进保活：访问文章页+模拟阅读）；仍失败则 **`zhihu_relogin.py`** |
 | 2 | **收藏夹 API 分页**：带 `include` 时列表可能被截断 | **`fetch_zhihu_collection.py`** 已内置 API ↔ DOM 切换；必要时减少 `include` 或走浏览器分页 |
 | 3 | **反爬**：Headless 被识别 | Stealth、UA、间隔；必要时 **`fetch_zhihu_interactive.py`** |
 | 4 | **API 正文不完整**：`include` 只给摘要 | 批量与单篇流程中已优先 **页面 DOM** 拉全文 |
 | 5 | **图片下载失败** | 正文仍保留原 URL；排查网络、Referer、过期链接 |
 | 6 | **Windows 控制台 GBK** | 脚本已 **`sys.stdout.reconfigure(encoding='utf-8')`** |
 | 7 | **批量中断** | 直接再次运行 **`fetch_zhihu_batch.py`**，依赖 **`_progress.json`** |
+| 8 | **失败项累积** | 散发失败自动记录到 `_progress.json`（含 url/reason/title/timestamp）；连续失败 ≥5 次中断并丢弃缓存；用 **`--retry-failed`** 参数可重试 |
+
+### Cookie 保活机制
+
+脚本内置多层 Cookie 保活策略：
+
+1. **主动 TTL 检测**（每篇文章）：解析 z_c0 的 `expires` 字段，剩余 < 30 分钟时自动触发激进刷新
+2. **常规保活**（每 5-8 篇）：访问知乎列表页 + 模拟滚动
+3. **激进保活**（每 ~20 篇）：访问实际文章页 + 模拟阅读（停留 2-5 秒 + 滚动）
+4. **被动检测**：每次访问文章时检查是否被重定向到 `/account/unhuman` 或 `/signin`
+5. **自动恢复**：检测到失效时，自动尝试 3 次激进保活恢复
+6. **Cookie 备份**：每次保活后自动从浏览器提取最新 Cookie 保存到文件（扩展格式含 expires）
+7. **安全退出**：脚本结束前保存最新 Cookie + 当前进度
+
+### 失败处理策略
+
+脚本采用**两级失败处理**，区分「文章本身问题」和「环境问题」：
+
+| 场景 | 行为 | 说明 |
+|------|------|------|
+| 散发失败（中间有成功） | 记录到 `_progress.json` 的 `failed` 字段 | 视为文章本身问题（已删除/不可访问），后续跳过 |
+| 连续失败 ≥ 5 次 | 中断抓取，**丢弃**缓存的失败记录 | 视为环境问题（Cookie/网络），下次重试仍可跑 |
+
+**工作原理：**
+- 失败先缓存在内存中，不立即写入进度文件
+- 下一条成功时，将缓存的失败记录批量写入进度文件（确认是文章问题）
+- 连续失败达到阈值（5 次）时，中断抓取，丢弃缓存（保留重试机会）
+
+**相关常量：**
+- `CONSECUTIVE_FAIL_THRESHOLD = 5`：连续失败阈值
+- `CONSECUTIVE_FAIL_INTERRUPT = True`：是否在连续失败时中断
+
+**重试模式：**
+```bash
+python fetch_zhihu_batch.py <列表文件> [输出目录] [图片目录] --retry-failed
+```
+此模式会清空 `failed` 列表，只重试之前记录为失败的文章。
 
 ---
 
-## 故障排查流程（摘要）
+## 故障排查流程
 
 ```
 正文全空？

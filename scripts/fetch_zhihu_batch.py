@@ -33,8 +33,12 @@ Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
 """
 
-COOKIE_KEEPALIVE_INTERVAL_MIN = 15  # 最小刷新间隔
-COOKIE_KEEPALIVE_INTERVAL_MAX = 25  # 最大刷新间隔
+COOKIE_KEEPALIVE_INTERVAL_MIN = 5   # 最小刷新间隔（更频繁）
+COOKIE_KEEPALIVE_INTERVAL_MAX = 8   # 最大刷新间隔
+COOKIE_EXPIRE_WARN_SECONDS = 1800   # z_c0 过期前30分钟开始警告
+MAX_RECOVERY_ATTEMPTS = 3           # Cookie失效最大恢复尝试次数
+CONSECUTIVE_FAIL_THRESHOLD = 5      # 连续失败阈值
+CONSECUTIVE_FAIL_INTERRUPT = True   # 连续失败是否中断
 
 def get_default_paths():
     """获取默认路径"""
@@ -54,14 +58,76 @@ def save_cookies(cookies_dict):
         json.dump(cookies_dict, f, ensure_ascii=False, indent=2)
 
 def load_cookies():
-    """加载 cookie"""
+    """加载 cookie（支持两种格式：简单dict或扩展格式含expires）"""
     cookie_file = get_default_paths()['cookie_file']
     if not os.path.exists(cookie_file):
         return None
     try:
         with open(cookie_file, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+        # 判断格式：如果值是 dict 则是扩展格式，提取 value
+        if not data:
+            return None
+        result = {}
+        for k, v in data.items():
+            if isinstance(v, dict):
+                result[k] = v.get('value', '')
+            else:
+                result[k] = v
+        return result
     except Exception:
+        return None
+
+def parse_z_c0_expiry(cookies_dict):
+    """解析 z_c0 cookie 的过期时间（秒级时间戳）"""
+    z_c0 = cookies_dict.get('z_c0', '')
+    if not z_c0:
+        return None
+    try:
+        # z_c0 格式通常是 base64 编码，内含时间戳
+        # 尝试从 cookie 文件中读取 expires 字段
+        cookie_file = get_default_paths()['cookie_file']
+        with open(cookie_file, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        # 如果是扩展格式（带 expires 字段）
+        if isinstance(data, dict) and 'z_c0' in data:
+            z_c0_data = data['z_c0']
+            if isinstance(z_c0_data, dict) and 'expires' in z_c0_data:
+                return z_c0_data['expires']
+    except Exception:
+        pass
+    return None
+
+def cookie_ttl_seconds(cookies_dict):
+    """计算 cookie 剩余有效时间（秒）"""
+    import time
+    expiry = parse_z_c0_expiry(cookies_dict)
+    if expiry:
+        return max(0, expiry - time.time())
+    return None  # 无法判断
+
+async def save_browser_cookies(context):
+    """从浏览器上下文提取并保存 cookie（扩展格式，含过期时间）"""
+    cookie_file = get_default_paths()['cookie_file']
+    try:
+        cookies = await context.cookies()
+        # 保存为扩展格式：{name: {value, expires, domain, path}}
+        cookie_data = {}
+        cookie_dict = {}
+        for c in cookies:
+            cookie_dict[c['name']] = c['value']
+            cookie_data[c['name']] = {
+                'value': c['value'],
+                'expires': c.get('expires', -1),
+                'domain': c.get('domain', ''),
+                'path': c.get('path', '/'),
+            }
+        # 同时保存两种格式
+        with open(cookie_file, 'w', encoding='utf-8') as f:
+            json.dump(cookie_data, f, ensure_ascii=False, indent=2)
+        return cookie_dict
+    except Exception as e:
+        print(f"  [!] 保存Cookie失败: {e}")
         return None
 
 def download_image(url, save_dir):
@@ -220,11 +286,17 @@ def html_to_markdown(html_content, images_dir=None):
     return text, downloaded_images, image_sources
 
 def load_progress(progress_file):
-    """加载进度"""
+    """加载进度（兼容旧格式）"""
     if os.path.exists(progress_file):
         try:
             with open(progress_file, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                data = json.load(f)
+            # 兼容旧格式：failed 可能是简单 URL 列表
+            if 'failed' in data and data['failed']:
+                if isinstance(data['failed'][0], str):
+                    # 旧格式：转为新格式
+                    data['failed'] = [{'url': u, 'reason': 'unknown'} for u in data['failed']]
+            return data
         except Exception:
             pass
     return {'completed': [], 'failed': []}
@@ -233,6 +305,21 @@ def save_progress(progress_file, progress):
     """保存进度"""
     with open(progress_file, 'w', encoding='utf-8') as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
+
+def add_failure(progress, progress_file, url, reason, title='', index=0):
+    """记录失败项到进度文件"""
+    import time
+    # 避免重复记录
+    failed_urls = {f['url'] for f in progress.get('failed', [])}
+    if url not in failed_urls:
+        progress.setdefault('failed', []).append({
+            'url': url,
+            'reason': reason,
+            'title': title[:100] if title else '',
+            'index': index,
+            'timestamp': int(time.time()),
+        })
+        save_progress(progress_file, progress)
 
 async def main():
     # 解析参数
@@ -268,9 +355,27 @@ async def main():
     progress_file = os.path.join(output_dir, '_progress.json')
     progress = load_progress(progress_file)
     completed_urls = set(progress.get('completed', []))
+    failed_urls = {f['url'] for f in progress.get('failed', [])}
+    
+    # --no-interrupt 模式：不因连续失败中断
+    no_interrupt = '--no-interrupt' in sys.argv
+    if no_interrupt:
+        global CONSECUTIVE_FAIL_INTERRUPT
+        CONSECUTIVE_FAIL_INTERRUPT = False
+        print("[模式] 连续失败不中断")
+    
+    # --retry-failed 模式：只重试失败项
+    retry_failed = '--retry-failed' in sys.argv
+    if retry_failed:
+        print("[模式] 重试失败项")
+        # 清空 failed 列表，让脚本重新尝试
+        progress['failed'] = []
+        failed_urls = set()
+        save_progress(progress_file, progress)
     
     print(f"总文章数: {total}")
     print(f"已完成: {len(completed_urls)}")
+    print(f"已失败: {len(failed_urls)}")
     print(f"输出目录: {output_dir}")
     print(f"图片目录: {images_dir}")
     print()
@@ -290,30 +395,110 @@ async def main():
         
         page = context.pages[0] if context.pages else await context.new_page()
         
-        async def keepalive_cookie():
-            """刷新 cookie 保活 - 更真实的用户行为"""
+        # 注入 cookie 文件到浏览器上下文（解决持久化上下文不自动加载的问题）
+        saved_cookies = load_cookies()
+        if saved_cookies:
+            cookie_list = []
+            for name, value in saved_cookies.items():
+                if isinstance(value, dict):
+                    # 扩展格式
+                    cookie_list.append({
+                        'name': name,
+                        'value': value.get('value', ''),
+                        'domain': value.get('domain', '.zhihu.com'),
+                        'path': value.get('path', '/'),
+                    })
+                else:
+                    # 简单格式
+                    cookie_list.append({
+                        'name': name,
+                        'value': value,
+                        'domain': '.zhihu.com',
+                        'path': '/',
+                    })
+            await context.add_cookies(cookie_list)
+            print(f"已注入 {len(cookie_list)} 个 cookie 到浏览器")
+        
+        async def keepalive_cookie(aggressive=False):
+            """刷新 cookie 保活 - 模拟真实用户行为
+            
+            Args:
+                aggressive: 是否激进保活（访问文章页+更长停留）
+            """
             try:
-                # 随机选择一个文章页面访问（比首页更真实）
-                test_urls = [
-                    'https://www.zhihu.com',
-                    'https://www.zhihu.com/hot',
-                    'https://www.zhihu.com/follow',
-                ]
-                test_url = random.choice(test_urls)
+                if aggressive:
+                    # 激进保活：访问随机文章，模拟阅读
+                    # 从已完成的文章中随机选一篇访问
+                    if completed_urls:
+                        sample_url = random.choice(list(completed_urls))
+                    else:
+                        sample_url = 'https://zhuanlan.zhihu.com/p/6859032468'
+                    await page.goto(sample_url, wait_until='domcontentloaded', timeout=20000)
+                    # 模拟阅读行为：等待+滚动
+                    await page.wait_for_timeout(random.uniform(2, 5))
+                    await page.evaluate('window.scrollBy(0, 500)')
+                    await page.wait_for_timeout(random.uniform(1, 3))
+                    await page.evaluate('window.scrollBy(0, -200)')
+                    await page.wait_for_timeout(random.uniform(0.5, 1.5))
+                else:
+                    # 常规保活：访问列表页
+                    test_urls = [
+                        'https://www.zhihu.com/hot',
+                        'https://www.zhihu.com/follow',
+                        'https://www.zhihu.com/explore',
+                    ]
+                    test_url = random.choice(test_urls)
+                    await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
+                    await page.wait_for_timeout(random.uniform(1, 3))
+                    await page.evaluate('window.scrollBy(0, 300)')
+                    await page.wait_for_timeout(random.uniform(0.5, 1.5))
                 
-                await page.goto(test_url, wait_until='domcontentloaded', timeout=15000)
-                await page.wait_for_timeout(random.uniform(1, 3))  # 随机等待
-                
-                # 模拟滚动（更真实的用户行为）
-                await page.evaluate('window.scrollBy(0, 300)')
-                await page.wait_for_timeout(random.uniform(0.5, 1.5))
-                
-                # 检查是否被重定向到验证页面
-                if 'unhuman' not in page.url:
-                    # 持久化上下文会自动保存 cookie
+                # 检查是否被重定向到验证页面或登录页
+                if 'unhuman' not in page.url and '/signin' not in page.url:
+                    # 保存最新 cookie 到文件
+                    await save_browser_cookies(context)
                     return True
             except Exception:
                 pass
+            return False
+        
+        async def check_cookie_ttl():
+            """主动检测 z_c0 cookie 的剩余有效期（秒）
+            Returns: (ttl_seconds, is_expiring_soon)
+            """
+            try:
+                cookies = await context.cookies()
+                import time
+                now = time.time()
+                for c in cookies:
+                    if c['name'] == 'z_c0':
+                        expires = c.get('expires', -1)
+                        if expires > 0:
+                            ttl = expires - now
+                            return (ttl, ttl < COOKIE_EXPIRE_WARN_SECONDS)
+                        # expires <= 0 表示会话cookie，无法判断
+                        return (None, False)
+            except Exception:
+                pass
+            return (None, False)
+
+        async def check_and_recover_cookie():
+            """检查 cookie 状态，尝试自动恢复"""
+            for attempt in range(MAX_RECOVERY_ATTEMPTS):
+                print(f"  [恢复] 尝试 {attempt+1}/{MAX_RECOVERY_ATTEMPTS}...")
+                # 先尝试激进保活
+                if await keepalive_cookie(aggressive=True):
+                    # 验证恢复是否成功
+                    try:
+                        await page.goto('https://www.zhihu.com', wait_until='domcontentloaded', timeout=15000)
+                        await page.wait_for_timeout(2000)
+                        if 'unhuman' not in page.url and '/signin' not in page.url:
+                            print(f"  [恢复] ✅ Cookie 已恢复！")
+                            return True
+                    except Exception:
+                        pass
+                # 短暂等待后重试
+                await asyncio.sleep(random.uniform(3, 8))
             return False
         
         # 启动时检查 cookie 是否有效
@@ -327,7 +512,7 @@ async def main():
             print(f"  当前 URL: {current_url}")
             print(f"  当前标题: {current_title[:50]}")
             
-            if 'unhuman' in current_url:
+            if 'unhuman' in current_url or '/signin' in current_url:
                 print("[!] Cookie 已失效，尝试刷新...")
                 refreshed = await keepalive_cookie()
                 if not refreshed:
@@ -344,8 +529,44 @@ async def main():
         success = 0
         fail = 0
         skip = 0
+        consecutive_fails = 0           # 连续失败计数
+        pending_failures = []           # 内存缓存的失败记录（未确定原因）
         next_keepalive = random.randint(COOKIE_KEEPALIVE_INTERVAL_MIN, COOKIE_KEEPALIVE_INTERVAL_MAX)
         
+        def flush_pending_failures():
+            """将缓存的失败记录写入进度文件（视为文章本身问题）"""
+            if not pending_failures:
+                return
+            for pf in pending_failures:
+                add_failure(progress, progress_file, pf['url'], pf['reason'], pf['title'], pf['index'])
+            print(f"  [记录] {len(pending_failures)} 条失败写入进度文件")
+            pending_failures.clear()
+
+        def record_failure(url, reason, title, index):
+            """记录失败：先缓存，检查连续失败阈值"""
+            nonlocal consecutive_fails
+            consecutive_fails += 1
+            pending_failures.append({
+                'url': url,
+                'reason': reason,
+                'title': title,
+                'index': index,
+            })
+            
+            if CONSECUTIVE_FAIL_INTERRUPT and consecutive_fails >= CONSECUTIVE_FAIL_THRESHOLD:
+                print(f"  [!] 连续失败 {consecutive_fails} 次，达到阈值，中断抓取")
+                print(f"  [!] 缓存的失败记录已丢弃（可能是登录/网络问题）")
+                return True  # 需要中断
+            return False
+
+        def record_success():
+            """成功时：重置连续失败计数，将缓存的失败记录写入文件"""
+            nonlocal consecutive_fails
+            if consecutive_fails > 0:
+                consecutive_fails = 0
+            if pending_failures:
+                flush_pending_failures()
+
         for i, item in enumerate(items):
             url = item.get('url', '')
             title = item.get('title', f'文章{i+1}')
@@ -355,10 +576,20 @@ async def main():
                 skip += 1
                 continue
             
+            # 主动检测 Cookie TTL（提前刷新）
+            ttl, is_expiring = await check_cookie_ttl()
+            if is_expiring:
+                ttl_min = int(ttl / 60) if ttl else '?'
+                print(f"  [TTL] ⚠️ Cookie 将在 {ttl_min} 分钟后过期，提前刷新...")
+                await keepalive_cookie(aggressive=True)
+
             # 定时刷新 cookie（随机间隔）
             if (success + fail) >= next_keepalive:
-                print(f"  [刷新] 保活 cookie...")
-                await keepalive_cookie()
+                # 每3次常规保活做1次激进保活
+                aggressive = (success + fail) % (COOKIE_KEEPALIVE_INTERVAL_MAX * 3) < COOKIE_KEEPALIVE_INTERVAL_MAX
+                kind = "激进" if aggressive else "常规"
+                print(f"  [刷新] {kind}保活 cookie...")
+                await keepalive_cookie(aggressive=aggressive)
                 next_keepalive = success + fail + random.randint(COOKIE_KEEPALIVE_INTERVAL_MIN, COOKIE_KEEPALIVE_INTERVAL_MAX)
             
             print(f"[{i+1}/{total}] {title[:60]}")
@@ -367,21 +598,28 @@ async def main():
                 await page.goto(url, wait_until='domcontentloaded', timeout=30000)
                 await page.wait_for_timeout(2000)
                 
-                # 检查是否被重定向到验证页面
-                if 'unhuman' in page.url:
-                    print(f"  [!] Cookie 失效，尝试刷新...")
-                    refreshed = await keepalive_cookie()
-                    if refreshed:
-                        print(f"  [OK] Cookie 已刷新，继续抓取")
-                        # 重新加载 cookie
-                        new_cookies = load_cookies()
-                        if new_cookies:
-                            cookie_list = [{'name': n, 'value': v, 'domain': '.zhihu.com', 'path': '/'} for n, v in new_cookies.items()]
-                            await context.add_cookies(cookie_list)
-                        continue
+                # 检查是否被重定向到验证页面或登录页
+                if 'unhuman' in page.url or '/signin' in page.url:
+                    print(f"  [!] Cookie 失效，尝试自动恢复...")
+                    recovered = await check_and_recover_cookie()
+                    if recovered:
+                        print(f"  [OK] Cookie 已恢复，继续抓取")
+                        # 重新访问当前文章
+                        await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                        await page.wait_for_timeout(2000)
+                        if 'unhuman' in page.url or '/signin' in page.url:
+                            print(f"  [!] 恢复后仍无法访问，跳过")
+                            should_stop = record_failure(url, 'recovery_failed', title, i+1)
+                            fail += 1
+                            if should_stop:
+                                break
+                            continue
                     else:
-                        print(f"  [FAIL] Cookie 刷新失败，需要重新登录")
+                        print(f"  [FAIL] 自动恢复失败，需要手动登录")
                         print(f"  运行: python zhihu_relogin.py")
+                        record_failure(url, 'cookie_expired', title, i+1)
+                        # 保存当前进度后再退出
+                        save_progress(progress_file, progress)
                         break
                 
                 # 滚动页面加载所有内容
@@ -470,6 +708,7 @@ images: {len(images)}
                     
                     print(f"  [OK] {len(markdown)} 字, {len(images)} 张图片")
                     success += 1
+                    record_success()
                     
                     # 更新进度
                     completed_urls.add(url)
@@ -477,7 +716,10 @@ images: {len(images)}
                     save_progress(progress_file, progress)
                 else:
                     print(f"  [!] 内容为空或太短")
+                    should_stop = record_failure(url, 'content_empty', title, i+1)
                     fail += 1
+                    if should_stop:
+                        break
                 
                 # 随机延迟 0-2 秒（微秒级精度）
                 delay = random.uniform(0, 2)
@@ -485,13 +727,22 @@ images: {len(images)}
                 
             except Exception as e:
                 print(f"  [FAIL] {str(e)[:50]}")
+                should_stop = record_failure(url, f'exception:{str(e)[:80]}', title, i+1)
                 fail += 1
+                if should_stop:
+                    break
         
+        # 结束前保存最新 cookie
+        await save_browser_cookies(context)
         await context.close()
     
     print()
     print("=" * 60)
     print(f"完成! 成功: {success} | 失败: {fail} | 跳过: {skip}")
+    print(f"总进度: {len(completed_urls)}/{total} ({len(completed_urls)*100//total}%)")
+    failed_count = len(progress.get('failed', []))
+    if failed_count:
+        print(f"已记录失败: {failed_count} 条（可用 --retry-failed 重试）")
     print("=" * 60)
 
 if __name__ == "__main__":
