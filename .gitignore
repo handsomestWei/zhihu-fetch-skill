@@ -5,6 +5,8 @@ __pycache__/
 venv/
 env/
 *.egg-info/
+browsers/
+runtime/
 
 # 若在仓库根目录生成本地抓取目录（默认多在 ~/.openclaw/workspace/）
 zhihu_articles_*/

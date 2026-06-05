@@ -50,8 +50,11 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | 任务 | 建议方式 |
 |------|----------|
 | 获取收藏夹 JSON 列表 | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/fetch_zhihu_collection.py" <收藏夹URL或ID>`；优先 API，失败降级 Playwright DOM |
+| 获取个人主页点赞/收藏历史 | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/fetch_zhihu_history.py" <people URL 或 slug> <起始时间ISO> <输出.json> [--until <结束时间ISO>]`；按活动时间保留 `interaction_*` 元数据，支持断点续跑 |
 | 批量抓取正文与图片 | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/fetch_zhihu_batch.py" <列表.json> [输出目录] [图片目录]`；默认输出目录见「路径约定」 |
 | 写入 Obsidian Vault | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/write_to_obsidian.py" <文章目录> [Vault路径]`；Vault：命令行优先，否则环境变量 **`OBSIDIAN_VAULT`**；会先找 `<文章目录>/images`，否则兼容同级 **`zhihu_images`** |
+| 写入个人历史到 Obsidian | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/write_zhihu_history_to_obsidian.py" <文章目录> <Vault路径> [.]`；默认写入 `{Vault}/知乎收藏/{分类}/`，按 URL 去重更新 |
+| 写入失败项清单 | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/write_zhihu_failures.py" <Vault路径> <标签>:<progress.json> ...`；生成 `{Vault}/知乎收藏/抓取失败.md` |
 | Cookie 失效需人工登录 | **`Bash`** → `python "${CLAUDE_SKILL_DIR}/scripts/zhihu_relogin.py"`（会打开浏览器窗口） |
 | 首次登录辅助（可选验证页） | **`Bash`** → `zhihu_login.py`；可选 **`ZHIHU_VERIFY_URL`** 或首个参数传入完整 http(s) 链接，见「登录与可选页面验证」 |
 | 单篇快速验证 | **`Bash`** → `fetch_zhihu_api.py` / `fetch_zhihu_stealth.py` / `fetch_zhihu_interactive.py` / 汇总 **`fetch_zhihu.py`**（自动多策略），按场景选用 |
@@ -64,12 +67,15 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | 脚本 | 用途 | 典型场景 |
 |------|------|----------|
 | `fetch_zhihu_collection.py` | **收藏夹列表**，智能版 | 输出 `zhihu_collection_{id}.json` |
-| `fetch_zhihu_batch.py` | **批量抓取**，推荐 | 大量文章、图片、`images/`、`_progress.json` |
+| `fetch_zhihu_history.py` | **个人历史列表** | 点赞/收藏动态，支持 `--until`、`--fresh`、断点续跑 |
+| `fetch_zhihu_batch.py` | **批量抓取**，推荐 | 大量文章、图片、`images/`、`_progress.json`，失败自动重试，DOM 不足时 API 回退 |
 | `fetch_zhihu.py` | 自动降级抓取 | 单篇、多策略串联 |
 | `fetch_zhihu_api.py` | API 直连 | 快速测试 |
 | `fetch_zhihu_stealth.py` | Playwright 隐身 | 绕过常见自动化检测 |
 | `fetch_zhihu_interactive.py` | 交互式浏览器 | 登录页、验证码 |
 | `write_to_obsidian.py` | 写入 Obsidian | 自动检测 Vault、智能分类、`知乎收藏/` |
+| `write_zhihu_history_to_obsidian.py` | 写入个人历史到 Obsidian | 保留互动时间、动作标签、按 URL 去重 |
+| `write_zhihu_failures.py` | 写入失败项清单 | 生成 `抓取失败.md` 方便人工重试 |
 | `zhihu_relogin.py` | 重新登录 | Cookie 不可用 |
 | `zhihu_login.py` | 登录辅助 | 检测 `z_c0`；可选访问 **`ZHIHU_VERIFY_URL`** / 命令行 URL 做页面级验证 |
 | `zhihu_login_save.py` | 登录并保存 | 按需配合 Cookie 流程 |
@@ -84,6 +90,41 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 4. （可选）**`write_to_obsidian.py`** → 同步到 **`{Vault}/知乎收藏/{分类}/`**。
 
 中断批量任务时：**重新运行同一条** `fetch_zhihu_batch.py` 命令即可续跑（已完成 URL 记录在 `_progress.json`）。
+
+### 个人历史流程（点赞 / 收藏）
+
+适用于个人主页动态中的 **赞同了回答 / 赞同了文章 / 收藏了回答 / 收藏了文章**。时间采用 ISO 格式；若时间无时区，脚本默认按 **Europe/Stockholm** 解释。
+
+```bash
+# 1. 收集活动列表（起始时间含，结束时间不含）
+python scripts/fetch_zhihu_history.py \
+  https://www.zhihu.com/people/<slug> \
+  2026-01-01T00:00:00+01:00 \
+  /path/to/runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
+  --until 2026-04-05T00:00:00+02:00
+
+# 2. 抓取正文与图片；失败默认自动重试 3 次
+python scripts/fetch_zhihu_batch.py \
+  /path/to/runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
+  /path/to/runtime/zhihu_articles_history_2026-01-01_to_2026-04-05
+
+# 3. 写入 Obsidian 的知乎收藏根目录分类文件夹
+python scripts/write_zhihu_history_to_obsidian.py \
+  /path/to/runtime/zhihu_articles_history_2026-01-01_to_2026-04-05 \
+  /path/to/ObsidianVault \
+  .
+```
+
+历史笔记会保留：
+
+```yaml
+interaction_action: "赞同了回答"
+interaction_time: 2026-03-20T10:17:57.235000+00:00
+interaction_date: 2026-03-20
+tags: [zhihu, 编程与开发, 赞同了回答]
+```
+
+历史列表中断时重新运行同一条命令即可续跑；加 `--fresh` 可忽略现有 checkpoint 重建。写入 Obsidian 时会扫描已有笔记的 `url` 并按 URL 更新，避免重复导入。
 
 ---
 
