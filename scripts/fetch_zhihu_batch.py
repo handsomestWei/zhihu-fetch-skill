@@ -18,6 +18,7 @@ import os
 import urllib.request
 import hashlib
 import random
+import subprocess
 
 sys.stdout.reconfigure(encoding='utf-8')
 
@@ -306,6 +307,29 @@ def save_progress(progress_file, progress):
     with open(progress_file, 'w', encoding='utf-8') as f:
         json.dump(progress, f, ensure_ascii=False, indent=2)
 
+def yaml_scalar(value):
+    """Return a simple YAML scalar that is safe enough for frontmatter."""
+    if value is None:
+        return '""'
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+def extra_frontmatter(item):
+    """Preserve optional metadata from generated list files."""
+    keys = [
+        'interaction_action',
+        'interaction_time',
+        'activity_id',
+        'liked_action',
+        'source_feed',
+    ]
+    lines = []
+    for key in keys:
+        if key in item and item.get(key) not in (None, ''):
+            lines.append(f"{key}: {yaml_scalar(item.get(key))}")
+    return '\n'.join(lines)
+
 def add_failure(progress, progress_file, url, reason, title='', index=0):
     """记录失败项到进度文件"""
     import time
@@ -320,6 +344,66 @@ def add_failure(progress, progress_file, url, reason, title='', index=0):
             'timestamp': int(time.time()),
         })
         save_progress(progress_file, progress)
+
+def int_arg(name, default):
+    """Parse a simple integer flag: --flag 3."""
+    if name not in sys.argv:
+        return default
+    try:
+        return int(sys.argv[sys.argv.index(name) + 1])
+    except Exception:
+        return default
+
+async def fetch_via_page_api(page, url):
+    """Fallback to Zhihu JSON APIs when DOM extraction returns too little text."""
+    answer_match = re.search(r'/answer/(\d+)', url)
+    article_match = re.search(r'zhuanlan\.zhihu\.com/p/(\d+)', url)
+    if answer_match:
+        api_url = (
+            f"https://www.zhihu.com/api/v4/answers/{answer_match.group(1)}"
+            "?include=content,excerpt,author,voteup_count,question"
+        )
+        kind = 'answer'
+    elif article_match:
+        api_url = f"https://zhuanlan.zhihu.com/api/articles/{article_match.group(1)}"
+        kind = 'article'
+    else:
+        return None
+
+    result = await page.evaluate(
+        '''async ({apiUrl, kind}) => {
+            try {
+                const response = await fetch(apiUrl, {credentials: 'include'});
+                const text = await response.text();
+                if (!response.ok) {
+                    return {ok: false, status: response.status, text: text.slice(0, 500)};
+                }
+                const data = JSON.parse(text);
+                let title = data.title || '';
+                if (!title && data.question) title = data.question.title || '';
+                const author = data.author ? (data.author.name || '') : '';
+                const html = data.content || data.detail || '';
+                const plain = html.replace(/<[^>]+>/g, '').trim();
+                return {ok: true, kind, title, author, html, text: plain};
+            } catch (error) {
+                return {ok: false, status: 0, text: String(error)};
+            }
+        }''',
+        {'apiUrl': api_url, 'kind': kind},
+    )
+    if result and result.get('ok') and len(result.get('text', '')) > 100:
+        return {
+            'title': result.get('title', ''),
+            'author': result.get('author', ''),
+            'html': result.get('html', ''),
+            'text': result.get('text', ''),
+            'source': f'api:{kind}',
+        }
+    if result and result.get('status') == 403:
+        return {'error': 'api_blocked_403'}
+    if result:
+        return {'error': f"api_failed:{result.get('status', 0)}"}
+    return None
 
 async def main():
     # 解析参数
@@ -350,12 +434,14 @@ async def main():
     
     items = collection.get('items', [])
     total = len(items)
+    original_total = total
     
     # 加载进度
     progress_file = os.path.join(output_dir, '_progress.json')
     progress = load_progress(progress_file)
     completed_urls = set(progress.get('completed', []))
     failed_urls = {f['url'] for f in progress.get('failed', [])}
+    auto_retry_max = 0 if '--no-auto-retry' in sys.argv else int_arg('--auto-retry', 3)
     
     # --no-interrupt 模式：不因连续失败中断
     no_interrupt = '--no-interrupt' in sys.argv
@@ -368,7 +454,16 @@ async def main():
     retry_failed = '--retry-failed' in sys.argv
     if retry_failed:
         print("[模式] 重试失败项")
-        # 清空 failed 列表，让脚本重新尝试
+        retry_urls = {f['url'] for f in progress.get('failed', [])}
+        if retry_urls:
+            items = [item for item in items if item.get('url', '') in retry_urls]
+            total = len(items)
+            print(f"[模式] 本次仅重试 {total} 个失败项")
+        else:
+            items = []
+            total = 0
+            print("[模式] 没有可重试的失败项")
+        # 清空 failed 列表，让本次重试重新记录仍失败的项
         progress['failed'] = []
         failed_urls = set()
         save_progress(progress_file, progress)
@@ -621,6 +716,12 @@ async def main():
                         # 保存当前进度后再退出
                         save_progress(progress_file, progress)
                         break
+                if 'unhuman' in page.url:
+                    should_stop = record_failure(url, 'safety_verification', title, i+1)
+                    fail += 1
+                    if should_stop:
+                        break
+                    continue
                 
                 # 滚动页面加载所有内容
                 await page.evaluate('window.scrollTo(0, document.body.scrollHeight)')
@@ -657,6 +758,16 @@ async def main():
                 
                 html_content = article_data.get('html', '')
                 text_content = article_data.get('text', '')
+                fallback_error = ''
+                if not (text_content and len(text_content) > 100):
+                    fallback_data = await fetch_via_page_api(page, url)
+                    if fallback_data and fallback_data.get('text') and len(fallback_data.get('text', '')) > 100:
+                        article_data = fallback_data
+                        html_content = article_data.get('html', '')
+                        text_content = article_data.get('text', '')
+                        print(f"  [API] DOM内容不足，使用 {fallback_data.get('source')} 回退")
+                    elif fallback_data and fallback_data.get('error'):
+                        fallback_error = fallback_data.get('error')
                 
                 if text_content and len(text_content) > 100:
                     # 转换为 Markdown 并下载图片
@@ -688,6 +799,7 @@ source: zhihu
 url: "{url}"
 voteup: {voteup}
 images: {len(images)}
+{extra_frontmatter(item)}
 ---
 
 # {final_title}
@@ -716,7 +828,8 @@ images: {len(images)}
                     save_progress(progress_file, progress)
                 else:
                     print(f"  [!] 内容为空或太短")
-                    should_stop = record_failure(url, 'content_empty', title, i+1)
+                    reason = f'content_empty:{fallback_error}' if fallback_error else 'content_empty'
+                    should_stop = record_failure(url, reason, title, i+1)
                     fail += 1
                     if should_stop:
                         break
@@ -732,6 +845,7 @@ images: {len(images)}
                 if should_stop:
                     break
         
+        flush_pending_failures()
         # 结束前保存最新 cookie
         await save_browser_cookies(context)
         await context.close()
@@ -739,12 +853,42 @@ images: {len(images)}
     print()
     print("=" * 60)
     print(f"完成! 成功: {success} | 失败: {fail} | 跳过: {skip}")
-    print(f"总进度: {len(completed_urls)}/{total} ({len(completed_urls)*100//total}%)")
+    denominator = original_total or total or 1
+    print(f"总进度: {len(completed_urls)}/{denominator} ({len(completed_urls)*100//denominator}%)")
     failed_count = len(progress.get('failed', []))
     if failed_count:
         print(f"已记录失败: {failed_count} 条（可用 --retry-failed 重试）")
     print("=" * 60)
 
+    if auto_retry_max > 0 and not retry_failed:
+        for attempt in range(1, auto_retry_max + 1):
+            latest = load_progress(progress_file)
+            remaining_failed = latest.get('failed', [])
+            if not remaining_failed:
+                break
+            print()
+            print("=" * 60)
+            print(f"自动重试失败项: 第 {attempt}/{auto_retry_max} 次，待重试 {len(remaining_failed)} 条")
+            print("=" * 60)
+            cmd = [
+                sys.executable,
+                os.path.abspath(__file__),
+                list_file,
+                output_dir,
+                images_dir,
+                '--retry-failed',
+                '--no-auto-retry',
+            ]
+            result = subprocess.run(cmd, cwd=os.getcwd(), env=os.environ.copy())
+            if result.returncode != 0:
+                print(f"[!] 自动重试进程退出码: {result.returncode}")
+                break
+        latest = load_progress(progress_file)
+        remaining_failed = latest.get('failed', [])
+        if remaining_failed:
+            print(f"自动重试后仍失败: {len(remaining_failed)} 条")
+        else:
+            print("自动重试完成：没有剩余失败项")
+
 if __name__ == "__main__":
     asyncio.run(main())
-

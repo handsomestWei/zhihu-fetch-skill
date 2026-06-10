@@ -29,10 +29,11 @@ Cookie 经常失效，想要**持久化上下文 + 保活**？
 | 能力 | 说明 |
 |------|------|
 | 收藏夹列表 | `fetch_zhihu_collection.py` 优先 API，失败降级 Playwright DOM；输出 JSON 列表 |
-| 批量抓取 | `fetch_zhihu_batch.py`：正文 Markdown、图片默认写入 `{输出目录}/images/`、`_progress.json` 断点续传 |
+| 个人历史列表 | `fetch_zhihu_history.py`：个人主页点赞/收藏动态，支持时间范围、断点续跑、互动时间元数据 |
+| 批量抓取 | `fetch_zhihu_batch.py`：正文 Markdown、图片默认写入 `{输出目录}/images/`、`_progress.json` 断点续传、失败自动重试、API 回退 |
 | Cookie | 持久化浏览器上下文 + 定时保活；失效时用 `zhihu_relogin.py` 手动登录 |
 | 单篇 / 调试 | `fetch_zhihu.py`、`fetch_zhihu_api.py`、`fetch_zhihu_stealth.py`、`fetch_zhihu_interactive.py` 等多路径 |
-| Obsidian | `write_to_obsidian.py`：Vault 检测、按内容与已有「知乎收藏」结构智能分类、同步图片 |
+| Obsidian | `write_to_obsidian.py`：Vault 检测、按内容与已有「知乎收藏」结构智能分类、同步图片；`write_zhihu_history_to_obsidian.py` 支持历史项 URL 去重导入 |
 
 **依赖**：见 [`scripts/requirements.txt`](scripts/requirements.txt)，并需 `playwright install chromium`。
 
@@ -77,6 +78,28 @@ python scripts/fetch_zhihu_batch.py <列表.json>
 python scripts/write_to_obsidian.py <文章目录> [Vault路径]
 ```
 
+个人历史（点赞 / 收藏）示例：
+
+```bash
+# 1. 个人动态 → JSON 列表（起始时间含，结束时间不含）
+python scripts/fetch_zhihu_history.py \
+  https://www.zhihu.com/people/<slug> \
+  2026-01-01T00:00:00+01:00 \
+  runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
+  --until 2026-04-05T00:00:00+02:00
+
+# 2. 批量抓取正文与图片（失败默认自动重试 3 次）
+python scripts/fetch_zhihu_batch.py \
+  runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
+  runtime/zhihu_articles_history_2026-01-01_to_2026-04-05
+
+# 3. 写入 Obsidian 的「知乎收藏/{分类}/」根分类文件夹，按 url 去重更新
+python scripts/write_zhihu_history_to_obsidian.py \
+  runtime/zhihu_articles_history_2026-01-01_to_2026-04-05 \
+  /path/to/ObsidianVault \
+  .
+```
+
 Cookie 异常时：
 
 ```bash
@@ -101,12 +124,15 @@ zhihu-fetch-skill/
 └── scripts/
     ├── requirements.txt
     ├── fetch_zhihu_collection.py
+    ├── fetch_zhihu_history.py
     ├── fetch_zhihu_batch.py
     ├── fetch_zhihu.py
     ├── fetch_zhihu_api.py
     ├── fetch_zhihu_stealth.py
     ├── fetch_zhihu_interactive.py
     ├── write_to_obsidian.py
+    ├── write_zhihu_history_to_obsidian.py
+    ├── write_zhihu_failures.py
     ├── zhihu_login.py
     ├── zhihu_login_save.py
     └── zhihu_relogin.py
