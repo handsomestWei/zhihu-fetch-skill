@@ -1,7 +1,7 @@
 ---
 name: zhihu-fetcher
 description: "知乎收藏夹与文章内容抓取：API/Playwright 多级降级、Cookie 持久化与保活、批量正文与图片、断点续传、可选写入 Obsidian。| Zhihu collection scraping, batch article fetch, Obsidian export."
-version: "1.1.0"
+version: "1.2.0"
 user-invocable: true
 argument-hint: "[可选：收藏夹 URL 或 ID、单篇链接、输出目录、Vault 路径]"
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
@@ -74,7 +74,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | `fetch_zhihu_stealth.py` | Playwright 隐身 | 绕过常见自动化检测 |
 | `fetch_zhihu_interactive.py` | 交互式浏览器 | 登录页、验证码 |
 | `write_to_obsidian.py` | 写入 Obsidian | 自动检测 Vault、智能分类、`知乎收藏/` |
-| `write_zhihu_history_to_obsidian.py` | 写入个人历史到 Obsidian | 保留互动时间、动作标签、按 URL 去重 |
+| `write_zhihu_history_to_obsidian.py` | 写入个人历史到 Obsidian | 智能分类、互动元数据、按 URL 去重 |
 | `write_zhihu_failures.py` | 写入失败项清单 | 生成 `抓取失败.md` 方便人工重试 |
 | `zhihu_relogin.py` | 重新登录 | Cookie 不可用 |
 | `zhihu_login.py` | 登录辅助 | 检测 `z_c0`；可选访问 **`ZHIHU_VERIFY_URL`** / 命令行 URL 做页面级验证 |
@@ -93,15 +93,15 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 
 ### 个人历史流程（点赞 / 收藏）
 
-适用于个人主页动态中的 **赞同了回答 / 赞同了文章 / 收藏了回答 / 收藏了文章**。时间采用 ISO 格式；若时间无时区，脚本默认按 **Europe/Stockholm** 解释。
+适用于个人主页动态中的 **赞同了回答 / 赞同了文章 / 收藏了回答 / 收藏了文章**。时间采用 ISO 格式，**建议显式带时区**（如 `+08:00`）；若省略时区，默认按 **Asia/Shanghai** 解释，可用环境变量 **`ZHIHU_TIMEZONE`** 或 **`TZ`** 覆盖。
 
 ```bash
 # 1. 收集活动列表（起始时间含，结束时间不含）
 python scripts/fetch_zhihu_history.py \
   https://www.zhihu.com/people/<slug> \
-  2026-01-01T00:00:00+01:00 \
+  2026-01-01T00:00:00+08:00 \
   /path/to/runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
-  --until 2026-04-05T00:00:00+02:00
+  --until 2026-04-05T00:00:00+08:00
 
 # 2. 抓取正文与图片；失败默认自动重试 3 次
 python scripts/fetch_zhihu_batch.py \

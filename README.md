@@ -84,9 +84,9 @@ python scripts/write_to_obsidian.py <文章目录> [Vault路径]
 # 1. 个人动态 → JSON 列表（起始时间含，结束时间不含）
 python scripts/fetch_zhihu_history.py \
   https://www.zhihu.com/people/<slug> \
-  2026-01-01T00:00:00+01:00 \
+  2026-01-01T00:00:00+08:00 \
   runtime/zhihu_history_2026-01-01_to_2026-04-05.json \
-  --until 2026-04-05T00:00:00+02:00
+  --until 2026-04-05T00:00:00+08:00
 
 # 2. 批量抓取正文与图片（失败默认自动重试 3 次）
 python scripts/fetch_zhihu_batch.py \
@@ -130,6 +130,7 @@ zhihu-fetch-skill/
     ├── fetch_zhihu_api.py
     ├── fetch_zhihu_stealth.py
     ├── fetch_zhihu_interactive.py
+    ├── obsidian_classify.py
     ├── write_to_obsidian.py
     ├── write_zhihu_history_to_obsidian.py
     ├── write_zhihu_failures.py

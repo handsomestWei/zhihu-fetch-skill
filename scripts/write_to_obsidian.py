@@ -20,6 +20,12 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from obsidian_classify import (
+    analyze_content_categories,
+    classify_article,
+    detect_existing_categories,
+)
+
 
 def env_vault_candidate_paths():
     """
@@ -106,102 +112,6 @@ def detect_obsidian_vault():
     # 去重并返回
     candidates = list(dict.fromkeys(candidates))
     return candidates
-
-
-def detect_existing_categories(vault_path):
-    """
-    扫描 Obsidian Vault 中已有的分类目录。
-    返回: {分类名: 文章数量}
-    """
-    categories = {}
-    zhihu_dir = os.path.join(vault_path, '知乎收藏')
-
-    # 扫描知乎收藏目录下的分类
-    if os.path.exists(zhihu_dir):
-        for item in os.listdir(zhihu_dir):
-            item_path = os.path.join(zhihu_dir, item)
-            if os.path.isdir(item_path) and not item.startswith('.'):
-                # 统计该分类下的文章数
-                article_count = len([f for f in os.listdir(item_path) if f.endswith('.md')])
-                categories[item] = article_count
-
-    # 扫描 Vault 根目录的一级文件夹（作为参考）
-    vault_categories = {}
-    for item in os.listdir(vault_path):
-        item_path = os.path.join(vault_path, item)
-        if os.path.isdir(item_path) and not item.startswith('.'):
-            article_count = len([f for f in os.listdir(item_path) if f.endswith('.md')])
-            vault_categories[item] = article_count
-
-    return {
-        'zhihu': categories,
-        'vault': vault_categories,
-    }
-
-
-def analyze_content_categories(article_files, existing_categories):
-    """
-    分析文章内容，结合已有分类，生成智能分类规则。
-    策略：
-    1. 优先匹配已有分类的关键词
-    2. 对无法匹配的内容，自动聚类生成新分类
-    """
-    # 从已有分类中提取关键词
-    existing_keywords = {}
-    for cat_name in existing_categories.get('zhihu', {}):
-        existing_keywords[cat_name] = cat_name.lower()
-
-    # 预定义的通用分类模板（仅作为参考，不强制使用）
-    template_rules = {
-        'AI与人工智能': ['ai', '人工智能', 'gpt', 'chatgpt', '大模型', 'llm', '深度学习',
-                         '机器学习', 'openai', 'claude', 'gemini', 'aigc', 'agent'],
-        '编程与开发': ['python', 'java', 'javascript', 'typescript', '编程', '代码',
-                       '开发', '框架', 'api', '数据库', 'docker', 'git', '前端', '后端'],
-        '创业与商业': ['创业', '商业', '融资', '投资', 'startup', '产品', '运营',
-                       '市场', '营销', '一人公司', '独立开发', '副业'],
-        '效率与工具': ['效率', '工具', '自动化', '工作流', '笔记', 'obsidian', 'notion'],
-        '职场与成长': ['职场', '工作', '面试', '职业', '成长', '学习', '认知'],
-        '科技与互联网': ['科技', '互联网', '芯片', '区块链', 'web3', '自动驾驶'],
-        '产品与设计': ['产品', '设计', 'ui', 'ux', '交互', '用户体验', 'figma'],
-        '生活杂谈': ['生活', '健康', '旅行', '电影', '读书', '随笔', '思考'],
-    }
-
-    # 如果已有分类很多，优先使用已有分类
-    if len(existing_categories.get('zhihu', {})) >= 3:
-        print(f"检测到已有 {len(existing_categories['zhihu'])} 个分类，优先匹配已有分类")
-        return existing_keywords, template_rules
-    else:
-        print(f"已有分类较少（{len(existing_categories.get('zhihu', {}))} 个），使用智能分类")
-        return {}, template_rules
-
-
-def classify_article(title, content_preview, existing_keywords, template_rules):
-    """
-    智能分类：优先匹配已有分类，其次使用模板规则。
-    """
-    text = (title + ' ' + content_preview).lower()
-
-    # 优先级1：匹配已有分类关键词
-    if existing_keywords:
-        for cat_name, keyword in existing_keywords.items():
-            if keyword in text:
-                return cat_name
-
-    # 优先级2：使用模板规则
-    scores = {}
-    for category, keywords in template_rules.items():
-        score = sum(1 for kw in keywords if kw in text)
-        if score > 0:
-            scores[category] = score
-
-    if scores:
-        return max(scores, key=scores.get)
-
-    # 优先级3：根据标题特征推断
-    if any(w in title for w in ['?', '？', '如何', '怎么', '为什么', '是什么']):
-        return '问答与思考'
-
-    return '未分类'
 
 
 def parse_article_metadata(filepath):

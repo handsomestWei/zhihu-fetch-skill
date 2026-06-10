@@ -9,7 +9,10 @@ Usage:
   python fetch_zhihu_history.py <profile-url-or-slug> <cutoff-iso> [output-json] [--until <until-iso>]
 
 Example:
-  python fetch_zhihu_history.py duan-mu-yue-dao 2026-05-05T00:00:00+02:00
+  python fetch_zhihu_history.py duan-mu-yue-dao 2026-05-05T00:00:00+08:00
+
+Timezone: cutoff/--until 建议带时区（如 +08:00）。若省略时区，默认 Asia/Shanghai；
+可通过环境变量 ZHIHU_TIMEZONE 或 TZ 覆盖（如 Europe/Paris）。
 """
 
 import asyncio
@@ -33,8 +36,33 @@ WORKSPACE = os.environ.get(
     "OPENCLAW_WORKSPACE", os.path.join(os.path.expanduser("~"), ".openclaw", "workspace")
 )
 
+STEALTH_SCRIPT = """
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
+"""
+
 LIKED_OR_COLLECTED_PREFIXES = ("赞同了", "喜欢了", "收藏了")
 TARGET_TYPES = {"answer", "article"}
+
+
+def load_cookies():
+    cookie_file = os.path.join(WORKSPACE, "zhihu_cookies.json")
+    if not os.path.exists(cookie_file):
+        return None
+    try:
+        with open(cookie_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not data:
+            return None
+        result = {}
+        for k, v in data.items():
+            if isinstance(v, dict):
+                result[k] = v
+            else:
+                result[k] = {"value": v, "domain": ".zhihu.com", "path": "/"}
+        return result
+    except Exception:
+        return None
 
 
 def parse_slug(raw):
@@ -48,16 +76,29 @@ def parse_slug(raw):
     return raw.rstrip("/")
 
 
+def default_timezone():
+    """无时区 ISO 时间的默认解释；与 zhihu_login 等脚本一致优先中国时区。"""
+    from zoneinfo import ZoneInfo
+
+    name = (os.environ.get("ZHIHU_TIMEZONE") or os.environ.get("TZ") or "Asia/Shanghai").strip()
+    if not name:
+        name = "Asia/Shanghai"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        print(f"[!] invalid timezone {name!r}; fallback to Asia/Shanghai")
+        return ZoneInfo("Asia/Shanghai")
+
+
 def parse_cutoff(raw):
     value = raw.strip().replace(" ", "T")
     if value.endswith("Z"):
         value = value[:-1] + "+00:00"
     parsed = dt.datetime.fromisoformat(value)
     if parsed.tzinfo is None:
-        print("[!] cutoff has no timezone; assuming Europe/Stockholm")
-        from zoneinfo import ZoneInfo
-
-        parsed = parsed.replace(tzinfo=ZoneInfo("Europe/Stockholm"))
+        tz = default_timezone()
+        print(f"[!] time has no timezone; assuming {tz.key}")
+        parsed = parsed.replace(tzinfo=tz)
     return parsed
 
 
@@ -282,10 +323,24 @@ async def main():
             os.path.join(WORKSPACE, "chrome_user_data"),
             headless=True,
             args=["--disable-blink-features=AutomationControlled"],
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1440, "height": 900},
         )
+        await context.add_init_script(STEALTH_SCRIPT)
         page = context.pages[0] if context.pages else await context.new_page()
+
+        saved_cookies = load_cookies()
+        if saved_cookies:
+            cookie_list = []
+            for name, meta in saved_cookies.items():
+                cookie_list.append({
+                    "name": name,
+                    "value": meta.get("value", ""),
+                    "domain": meta.get("domain", ".zhihu.com"),
+                    "path": meta.get("path", "/"),
+                })
+            await context.add_cookies(cookie_list)
+            print(f"injected cookies: {len(cookie_list)}")
 
         def schedule_response(response):
             response_tasks.append(asyncio.create_task(on_response(response)))
@@ -310,8 +365,11 @@ async def main():
                 next_url,
             )
             if not payload.get("ok"):
-                print(f"[FAIL] activity fetch failed: HTTP {payload.get('status')} {payload.get('text', '')[:200]}")
-                sys.exit(2)
+                print(
+                    f"[!] activity fetch failed: HTTP {payload.get('status')} "
+                    f"{payload.get('text', '')[:200]} — falling back to scroll capture"
+                )
+                break
             data = json.loads(payload["text"])
             seen_activity_urls.add(next_url)
             await process_payload(data)

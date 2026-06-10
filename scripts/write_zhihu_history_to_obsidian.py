@@ -7,6 +7,8 @@ Usage:
 
 Use "." or omit folder-name to write under the Zhihu root category folders:
   {Vault}/知乎收藏/{category}/...
+
+分类逻辑见 obsidian_classify.py（与 write_to_obsidian 共用）。
 """
 
 import json
@@ -19,47 +21,11 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-CATEGORY_RULES = {
-    "AI与人工智能": [
-        "ai",
-        "人工智能",
-        "gpt",
-        "chatgpt",
-        "claude",
-        "大模型",
-        "llm",
-        "aigc",
-        "agent",
-        "vibe coding",
-    ],
-    "编程与开发": [
-        "python",
-        "java",
-        "javascript",
-        "typescript",
-        "c++",
-        "rust",
-        "golang",
-        "编程",
-        "代码",
-        "开发",
-        "框架",
-        "api",
-        "数据库",
-        "docker",
-        "git",
-        "linux",
-        "asio",
-        "networking",
-        "slam",
-    ],
-    "创业与商业": ["创业", "商业", "融资", "投资", "产品", "运营", "市场", "营销", "团队", "公司"],
-    "效率与工具": ["效率", "工具", "自动化", "工作流", "笔记", "obsidian", "notion", "netcat"],
-    "职场与成长": ["职场", "工作", "面试", "职业", "成长", "学习", "简历", "管理"],
-    "科技与互联网": ["科技", "互联网", "芯片", "区块链", "web3", "自动驾驶", "机器人"],
-    "产品与设计": ["产品", "设计", "ui", "ux", "交互", "用户体验", "figma"],
-    "生活杂谈": ["生活", "健康", "旅行", "电影", "读书", "文学", "红楼梦", "黛玉"],
-}
+from obsidian_classify import (
+    analyze_content_categories,
+    classify_article,
+    detect_existing_categories,
+)
 
 
 def parse_frontmatter(path):
@@ -92,6 +58,17 @@ def yaml_scalar(value):
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def format_tags(category, interaction_action=None):
+    """Build a YAML-safe tags line for Obsidian frontmatter."""
+    tags = ["zhihu"]
+    if category:
+        tags.append(str(category).strip())
+    action = (interaction_action or "").strip()
+    if action:
+        tags.append(action)
+    return f"tags: {json.dumps(tags, ensure_ascii=False)}"
+
+
 def safe_filename(text):
     text = re.sub(r'[\\/:*?"<>|]', "_", text)
     text = re.sub(r"\s+", " ", text).strip()
@@ -118,20 +95,6 @@ def interaction_date(value):
         return ""
 
 
-def classify_item(title, body):
-    text = f"{title} {body[:1500]}".lower()
-    scores = {}
-    for category, keywords in CATEGORY_RULES.items():
-        score = sum(1 for keyword in keywords if keyword.lower() in text)
-        if score:
-            scores[category] = score
-    if scores:
-        return max(scores, key=scores.get)
-    if any(mark in title for mark in ["?", "？", "如何", "怎么", "为什么", "是什么"]):
-        return "问答与思考"
-    return "未分类"
-
-
 def rewrite_image_links(body, note_dir, zhihu_dir):
     image_dir = zhihu_dir / "images"
 
@@ -141,6 +104,7 @@ def rewrite_image_links(body, note_dir, zhihu_dir):
         if re.match(r"https?://", target):
             return match.group(0)
         relative = os.path.relpath(image_dir / Path(target).name, note_dir)
+        relative = Path(relative).as_posix()
         return f"![{alt}]({relative})"
 
     return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace, body)
@@ -216,70 +180,79 @@ def main():
     url_index = build_url_index(history_dir)
 
     md_files = sorted(p for p in source_dir.iterdir() if p.suffix == ".md" and not p.name.startswith("_"))
+    existing = detect_existing_categories(str(vault_path))
+    existing_keywords, template_rules = analyze_content_categories(
+        [str(p) for p in md_files], existing
+    )
+    print(f"已有知乎分类: {list(existing['zhihu'].keys()) or '无'}")
+
     written = 0
     updated = 0
     skipped = 0
     for index, path in enumerate(md_files, 1):
-        meta, body = parse_frontmatter(path)
-        title = meta.get("title") or path.stem
-        url = meta.get("url")
-        category = meta.get("category") or classify_item(title, body)
-        filename = f"{safe_filename(title)}.md"
-        dest_dir = history_dir / category
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        existing_dest = url_index.get(url) if url else None
-        if existing_dest:
-            dest = existing_dest
-            if dest.parent != dest_dir:
-                candidate = unique_path(dest_dir / filename)
-                dest.rename(candidate)
-                dest = candidate
-                url_index[url] = dest
-        else:
-            dest = unique_path(dest_dir / filename)
+        try:
+            meta, body = parse_frontmatter(path)
+            title = meta.get("title") or path.stem
+            url = meta.get("url")
+            category = meta.get("category") or classify_article(
+                title, body[:500], existing_keywords, template_rules
+            )
+            filename = f"{safe_filename(title)}.md"
+            dest_dir = history_dir / category
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            existing_dest = url_index.get(url) if url else None
+            if existing_dest:
+                dest = existing_dest
+                if dest.parent != dest_dir:
+                    candidate = unique_path(dest_dir / filename)
+                    dest.rename(candidate)
+                    dest = candidate
+                    url_index[url] = dest
+            else:
+                dest = unique_path(dest_dir / filename)
 
-        ordered_keys = [
-            "title",
-            "author",
-            "source",
-            "url",
-            "type",
-            "category",
-            "interaction_action",
-            "interaction_time",
-            "interaction_date",
-            "activity_id",
-            "voteup",
-            "images",
-        ]
-        meta["category"] = category
-        meta["interaction_date"] = interaction_date(meta.get("interaction_time"))
-        frontmatter = []
-        for key in ordered_keys:
-            if key in meta and meta.get(key) not in (None, ""):
-                if key in ("interaction_time", "interaction_date"):
-                    frontmatter.append(f"{key}: {meta.get(key)}")
-                else:
+            ordered_keys = [
+                "title",
+                "author",
+                "source",
+                "url",
+                "type",
+                "category",
+                "interaction_action",
+                "interaction_time",
+                "interaction_date",
+                "activity_id",
+                "voteup",
+                "images",
+            ]
+            meta["category"] = category
+            meta["interaction_date"] = interaction_date(meta.get("interaction_time"))
+            frontmatter = []
+            for key in ordered_keys:
+                if key in meta and meta.get(key) not in (None, ""):
                     frontmatter.append(f"{key}: {yaml_scalar(meta.get(key))}")
-        frontmatter.append(f"imported: {datetime.now().strftime('%Y-%m-%d')}")
-        frontmatter.append(
-            f"tags: [zhihu, {category}, {meta.get('interaction_action', 'unknown')}]"
-        )
+            frontmatter.append(f"imported: {datetime.now().strftime('%Y-%m-%d')}")
+            frontmatter.append(
+                format_tags(category, meta.get("interaction_action"))
+            )
 
-        output = (
-            "---\n"
-            + "\n".join(frontmatter)
-            + "\n---\n\n"
-            + rewrite_image_links(body, dest_dir, zhihu_dir).strip()
-            + "\n"
-        )
-        dest.write_text(output, encoding="utf-8")
-        if existing_dest:
-            updated += 1
-        else:
-            written += 1
-            if url:
-                url_index[url] = dest
+            output = (
+                "---\n"
+                + "\n".join(frontmatter)
+                + "\n---\n\n"
+                + rewrite_image_links(body, dest_dir, zhihu_dir).strip()
+                + "\n"
+            )
+            dest.write_text(output, encoding="utf-8")
+            if existing_dest:
+                updated += 1
+            else:
+                written += 1
+                if url:
+                    url_index[url] = dest
+        except Exception as exc:
+            skipped += 1
+            print(f"  [!] 跳过 {path.name}: {exc}")
 
     copied_images = sync_images(source_dir, zhihu_dir)
     print(f"source: {source_dir}")
