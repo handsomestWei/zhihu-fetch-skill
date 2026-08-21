@@ -1,0 +1,18 @@
+{
+  "unlimited": false,
+  "collection": {
+    "max_collections": 10,
+    "items_per_collection": 20,
+    "max_items": 20
+  },
+  "column": {
+    "max_columns": 5,
+    "items_per_column": 20
+  },
+  "history": {
+    "max_items": 20
+  },
+  "batch": {
+    "max_items": 20
+  }
+}

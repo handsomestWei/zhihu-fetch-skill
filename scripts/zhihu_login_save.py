@@ -18,11 +18,14 @@ Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
 """
 
-COOKIE_FILE = os.path.join(os.path.expanduser('~'), '.openclaw', 'workspace', 'zhihu_cookies.json')
+from workspace_paths import get_default_paths
+
 
 async def main():
-    user_data_dir = os.path.join(os.path.expanduser('~'), '.openclaw', 'workspace', 'chrome_user_data')
-    os.makedirs(user_data_dir, exist_ok=True)
+    paths = get_default_paths()
+    cookie_file = paths["cookie_file"]
+    user_data_dir = paths["user_data_dir"]
+    os.makedirs(paths["workspace"], exist_ok=True)
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -49,9 +52,9 @@ async def main():
             if 'z_c0' in cookie_dict:
                 print("\n登录成功! 保存 cookies...")
                 # 保存到文件
-                with open(COOKIE_FILE, 'w', encoding='utf-8') as f:
+                with open(cookie_file, 'w', encoding='utf-8') as f:
                     json.dump(cookie_dict, f, ensure_ascii=False, indent=2)
-                print(f"Cookies 已保存到: {COOKIE_FILE}")
+                print(f"Cookies 已保存到: {cookie_file}")
 
                 # 验证
                 await page.goto('https://www.zhihu.com/collection/3146240766', wait_until='domcontentloaded', timeout=30000)

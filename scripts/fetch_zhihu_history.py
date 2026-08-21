@@ -6,7 +6,7 @@ The output JSON matches fetch_zhihu_batch.py's input shape, with extra
 interaction metadata preserved per item.
 
 Usage:
-  python fetch_zhihu_history.py <profile-url-or-slug> <cutoff-iso> [output-json] [--until <until-iso>]
+  python fetch_zhihu_history.py <profile-url-or-slug> <cutoff-iso> [output-json] [--until <until-iso>] [--max-items N]
 
 Example:
   python fetch_zhihu_history.py duan-mu-yue-dao 2026-05-05T00:00:00+08:00
@@ -32,9 +32,10 @@ except ImportError:
     sys.exit(1)
 
 
-WORKSPACE = os.environ.get(
-    "OPENCLAW_WORKSPACE", os.path.join(os.path.expanduser("~"), ".openclaw", "workspace")
-)
+from fetch_limits import describe_limit, resolve_limit
+from workspace_paths import get_workspace_dir
+
+WORKSPACE = get_workspace_dir()
 
 STEALTH_SCRIPT = """
 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -107,6 +108,16 @@ def optional_arg(name, default=None):
         return default
     try:
         return sys.argv[sys.argv.index(name) + 1]
+    except Exception:
+        return default
+
+
+def optional_int_arg(name, default=0):
+    raw = optional_arg(name)
+    if raw is None:
+        return default
+    try:
+        return max(0, int(raw))
     except Exception:
         return default
 
@@ -234,8 +245,9 @@ def save_checkpoint(
 
 async def main():
     if len(sys.argv) < 3:
-        print("用法: python fetch_zhihu_history.py <profile-url-or-slug> <cutoff-iso> [output-json]")
+        print("用法: python fetch_zhihu_history.py <profile-url-or-slug> <cutoff-iso> [output-json] [--until ISO] [--max-items N] [--all]")
         print("示例: python fetch_zhihu_history.py duan-mu-yue-dao 2026-05-05T00:00:00+02:00")
+        print("上限见 zhihu_fetch_config.json；省略 --max-items 时用配置默认值")
         sys.exit(1)
 
     slug = parse_slug(sys.argv[1])
@@ -244,6 +256,7 @@ async def main():
     until_raw = optional_arg("--until")
     until = parse_cutoff(until_raw) if until_raw else None
     until_ms = int(until.timestamp() * 1000) if until else None
+    max_items = resolve_limit("history.max_items", optional_int_arg("--max-items", None))
     output_json = (
         sys.argv[3]
         if len(sys.argv) >= 4 and not sys.argv[3].startswith("--")
@@ -256,6 +269,7 @@ async def main():
     print(f"cutoff: {cutoff.isoformat()}")
     if until:
         print(f"until: {until.isoformat()}")
+    print(f"max_items: {describe_limit(max_items)}")
 
     state = {} if "--fresh" in sys.argv else load_state(output_json)
     items = state.get("items", [])
@@ -290,6 +304,8 @@ async def main():
                 continue
             seen_urls.add(item["url"])
             items.append(item)
+            if max_items and len(items) >= max_items:
+                return
 
     async def on_response(response):
         url = response.url
@@ -352,6 +368,8 @@ async def main():
         active_fetch_done = False
         next_url = start_url
         for _ in range(300):
+            if max_items and len(items) >= max_items:
+                break
             if oldest_seen_ms and oldest_seen_ms < cutoff_ms:
                 break
             if next_url in seen_activity_urls:
@@ -399,6 +417,8 @@ async def main():
         last_page_count = 0
         if not active_fetch_done:
             for _ in range(120):
+                if max_items and len(items) >= max_items:
+                    break
                 if oldest_seen_ms and oldest_seen_ms < cutoff_ms:
                     break
                 await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
@@ -422,6 +442,9 @@ async def main():
     if not seen_activity_urls:
         print("[FAIL] no Zhihu activity feed pages were captured; profile may be on safety verification")
         sys.exit(2)
+
+    if max_items:
+        items[:] = items[:max_items]
 
     save_checkpoint(
         output_json,

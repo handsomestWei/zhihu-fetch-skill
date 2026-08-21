@@ -17,11 +17,12 @@ except ImportError:
     sys.exit(1)
 
 
+from workspace_paths import get_default_paths
+
+
 def get_user_data_dir():
     """获取浏览器用户数据目录（保存登录状态）"""
-    workspace = os.environ.get('OPENCLAW_WORKSPACE',
-                               os.path.join(os.path.expanduser('~'), '.openclaw', 'workspace'))
-    data_dir = os.path.join(workspace, 'chrome_user_data')
+    data_dir = get_default_paths()["user_data_dir"]
     os.makedirs(data_dir, exist_ok=True)
     return data_dir
 

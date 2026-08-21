@@ -8,12 +8,14 @@ env/
 browsers/
 runtime/
 
-# 若在仓库根目录生成本地抓取目录（默认多在 ~/.openclaw/workspace/）
+# 若在仓库根目录生成本地抓取目录
 zhihu_articles_*/
 
-# 临时与备份
-*.tmp
-~$*
+.pytest_cache/
+tests/.tmp-workspace/
+
+# 工作区（Cookie、浏览器数据、默认抓取输出）
+zhihu-fetch-workspace/
 
 # OS
 .DS_Store

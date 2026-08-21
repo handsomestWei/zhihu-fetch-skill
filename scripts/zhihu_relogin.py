@@ -13,17 +13,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 from playwright.async_api import async_playwright
 
 
-def get_default_paths():
-    """与 fetch_zhihu_batch 等脚本一致：OPENCLAW_WORKSPACE 优先，否则 ~/.openclaw/workspace"""
-    workspace = os.environ.get(
-        "OPENCLAW_WORKSPACE",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "workspace"),
-    )
-    return {
-        "workspace": workspace,
-        "cookie_file": os.path.join(workspace, "zhihu_cookies.json"),
-        "user_data_dir": os.path.join(workspace, "chrome_user_data"),
-    }
+from workspace_paths import get_default_paths
 
 
 async def main():

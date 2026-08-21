@@ -18,7 +18,7 @@ Cookie 经常失效，想要**持久化上下文 + 保活**？
 
 **本 Skill 按 AgentSkills 约定编排全流程，入口见根目录 [`SKILL.md`](SKILL.md)，脚本集中在 `scripts/`。**
 
-[功能特性](#功能特性) · [安装](#安装) · [使用](#使用) · [项目结构](#项目结构) · [运行效果](#运行效果) · [参考文档](#参考文档)
+[功能特性](#功能特性) · [运行效果](#运行效果) · [安装](#安装) · [使用](#使用) · [项目结构](#项目结构) · [参考文档](#参考文档)
 
 </div>
 
@@ -39,16 +39,34 @@ Cookie 经常失效，想要**持久化上下文 + 保活**？
 
 ---
 
+## 运行效果
+
+<table width="100%" border="1" cellpadding="12" cellspacing="0">
+<tr>
+<th width="50%" align="center">批量抓取<br><sub>Agent 对话中的进度、剩余篇数与 Cookie 保活（OpenClaw 示例）</sub></th>
+<th width="50%" align="center">写入 Obsidian<br><sub>「知乎收藏」主题分类与关系图谱</sub></th>
+</tr>
+<tr>
+<td width="50%" valign="top" align="center">
+<img src="docs/openclaw-run.jpg" alt="Agent 对话：批量抓取进度与 Cookie 保活" width="100%" />
+</td>
+<td width="50%" valign="top" align="center">
+<img src="docs/obs.jpg" alt="Obsidian：知乎收藏分类与关系图谱" width="100%" />
+</td>
+</tr>
+</table>
+
+---
+
 ## 安装
 
-### Claude Code / Cursor
+### 加载技能
 
-将本仓库放到宿主约定的 skills 路径（与 [`SKILL.md`](SKILL.md) 同级为 skill 根目录），重启后在规则或技能列表中确认已加载。
+将本仓库放到 Agent 宿主约定的 skills 路径（与 [`SKILL.md`](SKILL.md) 同级为 skill 根目录），重启后在技能列表中确认已加载。路径因宿主而异，例如 Claude Code、Cursor、OpenClaw 等。
 
 ```bash
-# 示例：克隆到项目的 skills 目录
-mkdir -p .cursor/skills
-git clone https://github.com/handsomestWei/zhihu-fetch-skill.git .cursor/skills/zhihu-fetch-skill
+# 示例：克隆到项目的 skills 目录（按宿主调整目标路径）
+git clone https://github.com/handsomestWei/zhihu-fetch-skill.git
 ```
 
 ### 依赖
@@ -59,13 +77,21 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
+仓库根目录运行测试（访问真实知乎，仅最近少量条目；账号见 `tests/live_profile.py`）：
+
+```bash
+python -m pytest
+```
+
+抓取上限集中在根目录 [`zhihu_fetch_config.json`](zhihu_fetch_config.json)，运行时优先读配置；对话里改默认用 `python scripts/fetch_limits.py --set key=value`。详情见 [`SKILL.md`](SKILL.md)。
+
 ---
 
 ## 使用
 
 在 Agent 中用自然语言描述即可，例如：知乎文章、收藏夹、批量抓取、写入 Obsidian、Cookie 失效。
 
-典型三步（路径请按本机 `{workspace}` 调整，详见 [`SKILL.md`](SKILL.md)）：
+典型三步（默认工作区为技能根下 `zhihu-fetch-workspace/`，可用环境变量 **`ZHIHU_WORKSPACE`** 覆盖，详见 [`SKILL.md`](SKILL.md)）：
 
 ```bash
 # 1. 收藏夹 → JSON 列表
@@ -76,6 +102,13 @@ python scripts/fetch_zhihu_batch.py <列表.json>
 
 # 3. 写入 Obsidian Vault（可选 Vault 路径）
 python scripts/write_to_obsidian.py <文章目录> [Vault路径]
+```
+
+用户专栏（`/people/<slug>/columns`，支持 `--column 名称`）：
+
+```bash
+python scripts/fetch_zhihu_columns.py https://www.zhihu.com/people/<slug>/columns --column 远东轶事 --per-column 2
+python scripts/fetch_zhihu_batch.py zhihu-fetch-workspace/zhihu_column_<id>.json
 ```
 
 个人历史（点赞 / 收藏）示例：
@@ -114,44 +147,15 @@ python scripts/zhihu_relogin.py
 
 ```
 zhihu-fetch-skill/
-├── SKILL.md                 # 技能入口：触发条件、命令与路径约定
-├── README.md                # 本说明
-├── LICENSE
-├── .gitignore
-├── docs/                    # 文档配图（运行效果截图）
-│   ├── openclaw-run.jpg
-│   └── obs.jpg
-└── scripts/
-    ├── requirements.txt
-    ├── fetch_zhihu_collection.py
-    ├── fetch_zhihu_history.py
-    ├── fetch_zhihu_batch.py
-    ├── fetch_zhihu.py
-    ├── fetch_zhihu_api.py
-    ├── fetch_zhihu_stealth.py
-    ├── fetch_zhihu_interactive.py
-    ├── obsidian_classify.py
-    ├── write_to_obsidian.py
-    ├── write_zhihu_history_to_obsidian.py
-    ├── write_zhihu_failures.py
-    ├── zhihu_login.py
-    ├── zhihu_login_save.py
-    └── zhihu_relogin.py
+├── SKILL.md          # 技能入口
+├── README.md
+├── docs/             # 运行效果配图
+├── tests/
+├── scripts/
+└── zhihu-fetch-workspace/  # 默认工作区（gitignore，不提交）
 ```
 
-默认文章与图片目录等行为以 [`SKILL.md`](SKILL.md)「批量抓取详解」「文件路径」为准。
-
----
-
-## 运行效果
-
-**在 OpenClaw 对话中执行批量抓取**（工具输出中可见进度、剩余篇数、图片数量与 Cookie 保活提示）
-
-![OpenClaw 聊天：批量抓取进度与 Cookie 保活](./docs/openclaw-run.jpg)
-
-**写入 Obsidian 后的 Vault 结构**（「知乎收藏」下主题分类与关系图谱）
-
-![Obsidian：知乎收藏分类与关系图谱](./docs/obs.jpg)
+默认路径与命令以 [`SKILL.md`](SKILL.md) 为准。
 
 ---
 

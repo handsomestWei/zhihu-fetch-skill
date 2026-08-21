@@ -18,16 +18,7 @@ window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app
 """
 
 
-def get_default_paths():
-    """与 fetch_zhihu_batch / zhihu_relogin 一致"""
-    workspace = os.environ.get(
-        "OPENCLAW_WORKSPACE",
-        os.path.join(os.path.expanduser("~"), ".openclaw", "workspace"),
-    )
-    return {
-        "workspace": workspace,
-        "user_data_dir": os.path.join(workspace, "chrome_user_data"),
-    }
+from workspace_paths import get_default_paths
 
 
 def optional_verify_url():

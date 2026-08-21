@@ -41,16 +41,8 @@ MAX_RECOVERY_ATTEMPTS = 3           # Cookie失效最大恢复尝试次数
 CONSECUTIVE_FAIL_THRESHOLD = 5      # 连续失败阈值
 CONSECUTIVE_FAIL_INTERRUPT = True   # 连续失败是否中断
 
-def get_default_paths():
-    """获取默认路径"""
-    workspace = os.environ.get('OPENCLAW_WORKSPACE',
-                               os.path.join(os.path.expanduser('~'), '.openclaw', 'workspace'))
-    return {
-        'workspace': workspace,
-        'cookie_file': os.path.join(workspace, 'zhihu_cookies.json'),
-        'images_dir': None,  # 默认放到文章目录内
-        'user_data_dir': os.path.join(workspace, 'chrome_user_data'),
-    }
+from fetch_limits import describe_limit, resolve_limit
+from workspace_paths import get_default_paths
 
 def save_cookies(cookies_dict):
     """保存 cookie 到文件"""
@@ -323,6 +315,10 @@ def extra_frontmatter(item):
         'activity_id',
         'liked_action',
         'source_feed',
+        'column_id',
+        'column_title',
+        'collection_id',
+        'collection_title',
     ]
     lines = []
     for key in keys:
@@ -353,6 +349,26 @@ def int_arg(name, default):
         return int(sys.argv[sys.argv.index(name) + 1])
     except Exception:
         return default
+
+
+_FLAGS_WITH_VALUE = {"--auto-retry", "--max-items"}
+
+
+def positional_args():
+    """CLI positionals, skipping --flags and their values."""
+    out = []
+    skip_next = False
+    for arg in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in _FLAGS_WITH_VALUE:
+            skip_next = True
+            continue
+        if arg.startswith("--"):
+            continue
+        out.append(arg)
+    return out
 
 async def fetch_via_page_api(page, url):
     """Fallback to Zhihu JSON APIs when DOM extraction returns too little text."""
@@ -407,23 +423,25 @@ async def fetch_via_page_api(page, url):
 
 async def main():
     # 解析参数
-    if len(sys.argv) < 2:
-        print("用法: python fetch_zhihu_batch.py <列表文件> [输出目录] [图片目录]")
+    positionals = positional_args()
+    if not positionals:
+        print("用法: python fetch_zhihu_batch.py <列表文件> [输出目录] [图片目录] [--max-items N] [--all]")
         print("示例: python fetch_zhihu_batch.py zhihu_collection_123.json")
+        print("省略 --max-items 时使用 zhihu_fetch_config.json 的 batch.max_items")
         sys.exit(1)
     
-    list_file = sys.argv[1]
+    list_file = positionals[0]
     paths = get_default_paths()
     
     # 输出目录
-    if len(sys.argv) >= 3:
-        output_dir = sys.argv[2]
+    if len(positionals) >= 2:
+        output_dir = positionals[1]
     else:
         collection_id = os.path.splitext(os.path.basename(list_file))[0].replace('zhihu_collection_', '')
         output_dir = os.path.join(paths['workspace'], f'zhihu_articles_{collection_id}')
     
     # 图片目录
-    images_dir = sys.argv[3] if len(sys.argv) >= 4 else os.path.join(output_dir, 'images')
+    images_dir = positionals[2] if len(positionals) >= 3 else os.path.join(output_dir, 'images')
     
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(images_dir, exist_ok=True)
@@ -433,6 +451,17 @@ async def main():
         collection = json.load(f)
     
     items = collection.get('items', [])
+    empty_urls = [item for item in items if not (item.get('url') or '').strip()]
+    if empty_urls:
+        print(f"[跳过] {len(empty_urls)} 条空 URL")
+        items = [item for item in items if (item.get('url') or '').strip()]
+    max_items = resolve_limit(
+        "batch.max_items",
+        int_arg("--max-items", None) if "--max-items" in sys.argv else None,
+    )
+    if max_items:
+        items = items[:max_items]
+    print(f"[模式] 最多抓取 {describe_limit(max_items)} 篇")
     total = len(items)
     original_total = total
     
@@ -614,7 +643,7 @@ async def main():
                     print("[FAIL] 需要重新登录")
                     print("运行: python zhihu_relogin.py")
                     await context.close()
-                    return
+                    sys.exit(1)
                 print("[OK] Cookie 已刷新")
             else:
                 print("[OK] Cookie 有效")
@@ -665,6 +694,11 @@ async def main():
         for i, item in enumerate(items):
             url = item.get('url', '')
             title = item.get('title', f'文章{i+1}')
+            
+            if not url:
+                print(f"[{i+1}/{total}] [跳过] 空 URL")
+                skip += 1
+                continue
             
             # 跳过已完成
             if url in completed_urls:
@@ -827,12 +861,8 @@ images: {len(images)}
                     progress['completed'] = list(completed_urls)
                     save_progress(progress_file, progress)
                 else:
-                    print(f"  [!] 内容为空或太短")
-                    reason = f'content_empty:{fallback_error}' if fallback_error else 'content_empty'
-                    should_stop = record_failure(url, reason, title, i+1)
-                    fail += 1
-                    if should_stop:
-                        break
+                    print(f"  [跳过] 内容为空或太短")
+                    skip += 1
                 
                 # 随机延迟 0-2 秒（微秒级精度）
                 delay = random.uniform(0, 2)
