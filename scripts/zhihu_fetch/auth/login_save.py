@@ -18,7 +18,7 @@ Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
 window.chrome = { runtime: {}, loadTimes: function() {}, csi: function() {}, app: {} };
 """
 
-from workspace_paths import get_default_paths
+from zhihu_fetch.core.paths import get_default_paths
 
 
 async def main():

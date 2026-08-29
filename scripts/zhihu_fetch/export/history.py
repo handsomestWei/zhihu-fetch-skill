@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-from obsidian_classify import (
+from zhihu_fetch.export.classify import (
     analyze_content_categories,
     classify_article,
     detect_existing_categories,

@@ -1,6 +1,6 @@
 """Offline tests for column list filtering."""
 
-from fetch_zhihu_columns import column_is_empty, column_matches, extract_column_id, normalize_column_article
+from zhihu_fetch.fetch.columns import column_is_empty, column_matches, extract_column_id, normalize_column_article
 
 
 def test_extract_column_id():

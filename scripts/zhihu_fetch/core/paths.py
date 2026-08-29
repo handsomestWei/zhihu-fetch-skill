@@ -8,9 +8,25 @@
 
 import os
 
-_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
-SKILL_ROOT = os.path.dirname(_SCRIPTS_DIR)
+
+def _find_skill_root():
+    cur = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        if os.path.isfile(os.path.join(cur, "SKILL.md")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
+
+SKILL_ROOT = _find_skill_root()
 _DEFAULT_WORKSPACE = os.path.join(SKILL_ROOT, "zhihu-fetch-workspace")
+
+
+def get_scripts_dir():
+    return os.path.join(SKILL_ROOT, "scripts")
 
 
 def get_workspace_dir():

@@ -14,5 +14,9 @@
   },
   "batch": {
     "max_items": 20
+  },
+  "people": {
+    "max_articles": 20,
+    "max_answers": 20
   }
 }

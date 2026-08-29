@@ -22,9 +22,9 @@ from zoneinfo import ZoneInfo
 import pytest
 import requests
 
-from fetch_zhihu_api import extract_article_id, fetch_via_api, fetch_via_page
-from fetch_zhihu_batch import extra_frontmatter, html_to_markdown
-from fetch_zhihu_collection import (
+from zhihu_fetch.body.api import extract_article_id, fetch_answer_via_api, fetch_via_api, fetch_via_page
+from zhihu_fetch.fetch.batch import extra_frontmatter, html_to_markdown
+from zhihu_fetch.fetch.collection import (
     collection_is_empty,
     fetch_via_api_with_status,
     list_member_favlists,
@@ -38,12 +38,11 @@ from live_profile import (
     LIVE_MAX_ITEMS,
     LIVE_PROFILE_URL,
 )
-from workspace_paths import get_workspace_dir
+from zhihu_fetch.core.paths import get_workspace_dir
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
-HISTORY_SCRIPT = SCRIPTS / "fetch_zhihu_history.py"
-ANSWER_API = "https://www.zhihu.com/api/v4/answers/{id}"
+ZHIHU_CLI = SCRIPTS / "zhihu.py"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Referer": "https://www.zhihu.com/",
@@ -60,7 +59,8 @@ def _run_history(workspace: Path, max_items: int):
     result = subprocess.run(
         [
             sys.executable,
-            str(HISTORY_SCRIPT),
+            str(ZHIHU_CLI),
+            "history",
             LIVE_PROFILE_URL,
             cutoff.strftime("%Y-%m-%dT00:00:00+08:00"),
             str(out_json),
@@ -80,15 +80,7 @@ def _run_history(workspace: Path, max_items: int):
 
 def _fetch_answer(url: str) -> tuple[str, str, str]:
     answer_id = url.rstrip("/").split("/")[-1]
-    response = requests.get(
-        ANSWER_API.format(id=answer_id),
-        params={"include": "content,excerpt,author,question"},
-        headers={**HEADERS, "Referer": url},
-        timeout=15,
-    )
-    if response.status_code != 200:
-        raise RuntimeError(f"回答 API HTTP {response.status_code}: {url}")
-    payload = response.json()
+    payload = fetch_answer_via_api(answer_id, referer=url, timeout=15)
     question = payload.get("question") or {}
     title = question.get("title") or f"回答 {answer_id}"
     author = ((payload.get("author") or {}).get("name")) or ""

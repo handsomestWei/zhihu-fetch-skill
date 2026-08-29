@@ -20,7 +20,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from obsidian_classify import (
+from zhihu_fetch.export.classify import (
     analyze_content_categories,
     classify_article,
     detect_existing_categories,

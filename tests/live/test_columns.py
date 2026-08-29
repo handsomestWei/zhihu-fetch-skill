@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fetch_zhihu_collection import load_cookies, parse_people_slug, save_json
-from fetch_zhihu_columns import (
+from zhihu_fetch.fetch.collection import load_cookies, parse_people_slug, save_json
+from zhihu_fetch.fetch.columns import (
     column_is_empty,
     column_matches,
     fetch_column_articles,
@@ -17,8 +17,8 @@ from live_profile import (
     LIVE_MAX_COLUMNS,
     LIVE_PROFILE_URL,
 )
-from test_live_fetch import _write_items
-from workspace_paths import get_workspace_dir
+from live.test_fetch import _write_items
+from zhihu_fetch.core.paths import get_workspace_dir
 
 
 def test_live_user_columns_hierarchy_and_sample_articles():

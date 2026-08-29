@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fetch_limits import (
+from zhihu_fetch.core.limits import (
     DEFAULTS,
     config_int,
     resolve_limit,
@@ -18,6 +18,8 @@ def test_defaults_match_skill_config():
     assert config_int("collection.max_items") == DEFAULTS["collection"]["max_items"]
     assert config_int("batch.max_items") == DEFAULTS["batch"]["max_items"]
     assert config_int("column.items_per_column") == DEFAULTS["column"]["items_per_column"]
+    assert config_int("people.max_articles") == DEFAULTS["people"]["max_articles"]
+    assert config_int("people.max_answers") == DEFAULTS["people"]["max_answers"]
 
 
 def test_cli_overrides_config():

@@ -32,8 +32,10 @@ except ImportError:
     sys.exit(1)
 
 
-from fetch_limits import describe_limit, resolve_limit
-from workspace_paths import get_workspace_dir
+from zhihu_fetch.core.limits import describe_limit, resolve_limit
+from zhihu_fetch.core.summary import bump, empty_summary, finish, note
+from zhihu_fetch.core.paths import get_workspace_dir
+from zhihu_fetch.core.seen import record_urls
 
 WORKSPACE = get_workspace_dir()
 
@@ -441,6 +443,11 @@ async def main():
 
     if not seen_activity_urls:
         print("[FAIL] no Zhihu activity feed pages were captured; profile may be on safety verification")
+        run = empty_summary(f"history:{slug}")
+        bump(run, "failed")
+        bump(run, "need_login")
+        note(run, "未捕获动态页，可能需要登录或安全验证")
+        finish(run, WORKSPACE)
         sys.exit(2)
 
     if max_items:
@@ -466,6 +473,11 @@ async def main():
     print(f"items: {len(items)}")
     print(f"types: {counts}")
     print(f"actions: {actions}")
+    run = empty_summary(f"history:{slug}")
+    bump(run, "success", len(items))
+    record_urls(items, "history", WORKSPACE)
+    run["outputs"].append(output_json)
+    finish(run, WORKSPACE)
 
 
 if __name__ == "__main__":

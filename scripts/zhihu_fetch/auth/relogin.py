@@ -13,7 +13,7 @@ sys.stdout.reconfigure(encoding='utf-8')
 from playwright.async_api import async_playwright
 
 
-from workspace_paths import get_default_paths
+from zhihu_fetch.core.paths import get_default_paths
 
 
 async def main():

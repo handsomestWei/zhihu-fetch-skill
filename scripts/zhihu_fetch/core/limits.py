@@ -11,9 +11,9 @@ Read order (later wins):
 turns every cap into unlimited.
 
 用法:
-  python scripts/fetch_limits.py
-  python scripts/fetch_limits.py --set collection.items_per_collection=10
-  python scripts/fetch_limits.py --set batch.max_items=50 --where workspace
+  python scripts/zhihu.py limits
+  python scripts/zhihu.py limits --set collection.items_per_collection=10
+  python scripts/zhihu.py limits --set batch.max_items=50 --where workspace
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ import json
 import os
 import sys
 
-from workspace_paths import SKILL_ROOT, get_workspace_dir
+from zhihu_fetch.core.paths import SKILL_ROOT, get_workspace_dir
 
 CONFIG_NAME = "zhihu_fetch_config.json"
 
@@ -43,6 +43,10 @@ DEFAULTS = {
     },
     "batch": {
         "max_items": 20,
+    },
+    "people": {
+        "max_articles": 20,
+        "max_answers": 20,
     },
 }
 

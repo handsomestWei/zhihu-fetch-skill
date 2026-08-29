@@ -22,18 +22,46 @@ def extract_article_id(url_or_id):
     return url_or_id
 
 
-def fetch_via_api(article_id, timeout=10):
-    """通过知乎 API 获取文章内容"""
-    api_url = f"https://zhuanlan.zhihu.com/api/articles/{article_id}"
+def _cookie_header():
+    try:
+        from zhihu_fetch.fetch.collection import load_cookies
+        return load_cookies() or ""
+    except Exception:
+        return ""
+
+
+def _headers(referer):
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
                        '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-        'Referer': f'https://zhuanlan.zhihu.com/p/{article_id}',
+        'Referer': referer,
     }
+    cookie = _cookie_header()
+    if cookie:
+        headers['Cookie'] = cookie
+    return headers
 
+
+def fetch_via_api(article_id, timeout=10):
+    """通过知乎 API 获取文章内容（有 Cookie 则带上，降低 403）"""
+    api_url = f"https://zhuanlan.zhihu.com/api/articles/{article_id}"
+    headers = _headers(f'https://zhuanlan.zhihu.com/p/{article_id}')
     response = requests.get(api_url, headers=headers, timeout=timeout)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_answer_via_api(answer_id, timeout=10, referer="https://www.zhihu.com/"):
+    api_url = f"https://www.zhihu.com/api/v4/answers/{answer_id}"
+    headers = _headers(referer)
+    response = requests.get(
+        api_url,
+        params={"include": "content,excerpt,author,question,voteup_count"},
+        headers=headers,
+        timeout=timeout,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -52,7 +80,11 @@ def fetch_via_page(url, timeout=15):
         'Sec-Fetch-Mode': 'navigate',
         'Sec-Fetch-Site': 'none',
         'Upgrade-Insecure-Requests': '1',
+        'Referer': url,
     }
+    cookie = _cookie_header()
+    if cookie:
+        headers['Cookie'] = cookie
 
     session = requests.Session()
     response = session.get(url, headers=headers, timeout=timeout)

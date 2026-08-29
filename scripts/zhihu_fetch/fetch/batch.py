@@ -41,8 +41,10 @@ MAX_RECOVERY_ATTEMPTS = 3           # Cookie失效最大恢复尝试次数
 CONSECUTIVE_FAIL_THRESHOLD = 5      # 连续失败阈值
 CONSECUTIVE_FAIL_INTERRUPT = True   # 连续失败是否中断
 
-from fetch_limits import describe_limit, resolve_limit
-from workspace_paths import get_default_paths
+from zhihu_fetch.core.limits import describe_limit, resolve_limit
+from zhihu_fetch.core.summary import bump, empty_summary, finish, merge_failed_reasons, note
+from zhihu_fetch.core.paths import get_default_paths, get_scripts_dir
+from zhihu_fetch.core.seen import record_urls
 
 def save_cookies(cookies_dict):
     """保存 cookie 到文件"""
@@ -146,11 +148,14 @@ def download_image(url, save_dir):
         if os.path.exists(filepath):
             return filename
         
-        # 下载图片
-        req = urllib.request.Request(url, headers={
+        headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Referer': 'https://zhuanlan.zhihu.com/',
-        })
+        }
+        cookies = load_cookies()
+        if cookies:
+            headers['Cookie'] = '; '.join(f'{k}={v}' for k, v in cookies.items() if v)
+        req = urllib.request.Request(url, headers=headers)
         
         with urllib.request.urlopen(req, timeout=10) as response:
             with open(filepath, 'wb') as f:
@@ -470,6 +475,7 @@ async def main():
     progress = load_progress(progress_file)
     completed_urls = set(progress.get('completed', []))
     failed_urls = {f['url'] for f in progress.get('failed', [])}
+    already_done_at_start = len(completed_urls)
     auto_retry_max = 0 if '--no-auto-retry' in sys.argv else int_arg('--auto-retry', 3)
     
     # --no-interrupt 模式：不因连续失败中断
@@ -902,7 +908,8 @@ images: {len(images)}
             print("=" * 60)
             cmd = [
                 sys.executable,
-                os.path.abspath(__file__),
+                os.path.join(get_scripts_dir(), "zhihu.py"),
+                "batch",
                 list_file,
                 output_dir,
                 images_dir,
@@ -919,6 +926,25 @@ images: {len(images)}
             print(f"自动重试后仍失败: {len(remaining_failed)} 条")
         else:
             print("自动重试完成：没有剩余失败项")
+
+    latest = load_progress(progress_file)
+    run = empty_summary(f"batch:{os.path.basename(list_file)}")
+    completed = latest.get("completed") or []
+    newly = max(0, len(completed) - (0 if retry_failed else already_done_at_start))
+    bump(run, "success", newly)
+    bump(run, "skipped_empty", len(empty_urls))
+    if not retry_failed:
+        bump(run, "skipped_seen", already_done_at_start)
+    merge_failed_reasons(run, latest.get("failed"))
+    record_urls([{"url": u} for u in completed], "batch", paths["workspace"])
+    run["outputs"].append(output_dir)
+    run["outputs"].append(progress_file)
+    if latest.get("failed"):
+        note(run, f"失败 {len(latest['failed'])} 条，可用 --retry-failed 或 write_zhihu_failures.py")
+    if not load_cookies():
+        bump(run, "need_login")
+        note(run, "未检测到 Cookie，403/需登录风险更高")
+    finish(run, paths["workspace"])
 
 if __name__ == "__main__":
     asyncio.run(main())

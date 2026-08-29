@@ -21,15 +21,17 @@ import urllib.parse
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-from fetch_limits import describe_limit, resolve_limit
-from fetch_zhihu_collection import (
+from zhihu_fetch.core.limits import describe_limit, resolve_limit
+from zhihu_fetch.fetch.collection import (
     _request_json,
     load_cookies,
     optional_arg,
     parse_people_slug,
     save_json,
 )
-from workspace_paths import get_default_paths
+from zhihu_fetch.core.summary import bump, empty_summary, finish, note
+from zhihu_fetch.core.paths import get_default_paths
+from zhihu_fetch.core.seen import canonical_url, collect_seen_urls, record_urls
 
 
 def extract_column_id(url_or_id):
@@ -136,12 +138,16 @@ def list_member_columns(slug, cookie_str=""):
     return all_items
 
 
-def fetch_column_articles(column_id, max_items=0, cookie_str=""):
+def fetch_column_articles(column_id, max_items=0, cookie_str="", skip_urls=None, stats=None):
     print(f"[API] 获取专栏 {column_id} 文章")
     all_items = []
     skipped = 0
+    skipped_seen = 0
+    http_403 = 0
     offset = 0
     limit = 20
+    seen = set(skip_urls or [])
+
     while True:
         url = (
             f"https://zhuanlan.zhihu.com/api/columns/{column_id}/articles"
@@ -155,6 +161,8 @@ def fetch_column_articles(column_id, max_items=0, cookie_str=""):
             )
         except urllib.error.HTTPError as exc:
             print(f"  [ERROR] HTTP {exc.code}")
+            if exc.code == 403:
+                http_403 += 1
             break
         except Exception as exc:
             print(f"  [ERROR] {exc}")
@@ -168,16 +176,36 @@ def fetch_column_articles(column_id, max_items=0, cookie_str=""):
             if not info:
                 skipped += 1
                 continue
+            key = canonical_url(info["url"])
+            if key in seen:
+                skipped_seen += 1
+                continue
+            seen.add(key)
             all_items.append(info)
             if max_items and len(all_items) >= max_items:
-                print(f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}")
+                print(
+                    f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+                )
+                if stats is not None:
+                    stats["skipped_empty"] = skipped
+                    stats["skipped_seen"] = skipped_seen
+                    stats["http_403"] = http_403
                 return all_items
-        print(f"  本页 {len(rows)} 条，有效累计 {len(all_items)}，跳过 {skipped}")
+        print(
+            f"  本页 {len(rows)} 条，有效累计 {len(all_items)}，"
+            f"跳过空 {skipped}，已抓 {skipped_seen}"
+        )
         if paging.get("is_end", True):
             break
         offset += limit
         time.sleep(0.4)
-    print(f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}")
+    print(
+        f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+    )
+    if stats is not None:
+        stats["skipped_empty"] = skipped
+        stats["skipped_seen"] = skipped_seen
+        stats["http_403"] = http_403
     return all_items
 
 
@@ -189,7 +217,7 @@ def main():
     if len(sys.argv) < 2:
         print("用法: python fetch_zhihu_columns.py <个人主页|/columns|专栏URL> [--column 名称]")
         print("      python fetch_zhihu_columns.py <个人主页> --list-only")
-        print("上限见 zhihu_fetch_config.json 的 column.* ；--all 取消限制")
+        print("上限见 zhihu_fetch_config.json 的 column.* ；--all 取消限制；--since-last 只补新条目")
         sys.exit(1)
 
     url_or_id = sys.argv[1]
@@ -205,6 +233,10 @@ def main():
         int(max_col_raw) if max_col_raw and str(max_col_raw).isdigit() else None,
     )
     list_only = "--list-only" in sys.argv
+    since_last = "--since-last" in sys.argv
+    skip_urls = collect_seen_urls() if since_last else None
+    if since_last:
+        print(f"[增量] 已记录 URL {len(skip_urls or [])} 条")
 
     workspace = get_default_paths()["workspace"]
     os.makedirs(workspace, exist_ok=True)
@@ -239,17 +271,30 @@ def main():
             "columns": [],
         }
 
+        run = empty_summary(f"columns:{slug}")
+        bump(run, "skipped_empty", len(empty))
+
         if list_only:
             tree["columns"] = nonempty
             save_json(os.path.join(workspace, f"zhihu_columns_{slug}.json"), tree)
             print("仅列出专栏（--list-only）")
+            finish(run, workspace)
             return
 
         print(f"每栏最多 {describe_limit(per_column)} 篇")
         for col in nonempty:
             print()
             print(f"=== {col['title']} ({col['id']}) ===")
-            items = fetch_column_articles(col["id"], per_column, cookie_str)
+            stats = {}
+            items = fetch_column_articles(
+                col["id"], per_column, cookie_str, skip_urls=skip_urls, stats=stats
+            )
+            bump(run, "skipped_empty", stats.get("skipped_empty", 0))
+            bump(run, "skipped_seen", stats.get("skipped_seen", 0))
+            bump(run, "http_403", stats.get("http_403", 0))
+            if stats.get("http_403") and not cookie_str:
+                bump(run, "need_login")
+                note(run, f"专栏 {col['id']} 403，建议登录后重试")
             if not items:
                 print(f"[跳过] 专栏 {col['id']} 无有效文章")
                 continue
@@ -261,8 +306,9 @@ def main():
             node["items"] = capped
             node["fetched"] = len(capped)
             tree["columns"].append(node)
+            out = os.path.join(workspace, f"zhihu_column_{_safe_filename(col['id'])}.json")
             save_json(
-                os.path.join(workspace, f"zhihu_column_{_safe_filename(col['id'])}.json"),
+                out,
                 {
                     "total": len(capped),
                     "column_id": col["id"],
@@ -271,8 +317,19 @@ def main():
                     "items": capped,
                 },
             )
+            record_urls(capped, f"column:{col['id']}", workspace)
+            bump(run, "success", len(capped))
+            run["outputs"].append(out)
+            if skip_urls is not None:
+                skip_urls.update(canonical_url(it.get("url")) for it in capped if it.get("url"))
 
-        save_json(os.path.join(workspace, f"zhihu_columns_{slug}.json"), tree)
+        tree_path = os.path.join(workspace, f"zhihu_columns_{slug}.json")
+        save_json(tree_path, tree)
+        run["outputs"].append(tree_path)
+        if not cookie_str:
+            bump(run, "need_login")
+            note(run, "未检测到 Cookie")
+        finish(run, workspace)
         return
 
     if not column_id:
@@ -281,17 +338,28 @@ def main():
 
     print(f"专栏 ID: {column_id}")
     print(f"每栏最多 {describe_limit(per_column)} 篇")
+    run = empty_summary(f"column:{column_id}")
     col = {"id": column_id, "title": column_id, "url": f"https://www.zhihu.com/column/{column_id}"}
-    items = fetch_column_articles(column_id, per_column, cookie_str)
+    stats = {}
+    items = fetch_column_articles(column_id, per_column, cookie_str, skip_urls=skip_urls, stats=stats)
+    bump(run, "skipped_empty", stats.get("skipped_empty", 0))
+    bump(run, "skipped_seen", stats.get("skipped_seen", 0))
+    bump(run, "http_403", stats.get("http_403", 0))
+    if stats.get("http_403") and not cookie_str:
+        bump(run, "need_login")
+        note(run, "专栏文章 API 403，建议登录后重试")
     if not items:
         print("获取失败或专栏为空，已跳过。")
+        note(run, "无有效文章")
+        finish(run, workspace)
         sys.exit(0)
     capped = items if not per_column else items[:per_column]
     for item in capped:
         item["column_id"] = column_id
         item["column_title"] = column_id
+    out = os.path.join(workspace, f"zhihu_column_{_safe_filename(column_id)}.json")
     save_json(
-        os.path.join(workspace, f"zhihu_column_{_safe_filename(column_id)}.json"),
+        out,
         {
             "total": len(capped),
             "column_id": column_id,
@@ -300,6 +368,10 @@ def main():
             "items": capped,
         },
     )
+    record_urls(capped, f"column:{column_id}", workspace)
+    bump(run, "success", len(capped))
+    run["outputs"].append(out)
+    finish(run, workspace)
 
 
 if __name__ == "__main__":

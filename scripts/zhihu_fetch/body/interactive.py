@@ -17,7 +17,7 @@ except ImportError:
     sys.exit(1)
 
 
-from workspace_paths import get_default_paths
+from zhihu_fetch.core.paths import get_default_paths
 
 
 def get_user_data_dir():
