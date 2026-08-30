@@ -71,6 +71,15 @@ def classify_zhihu_url(raw):
                 question_id=_digits(qid) or qid,
             )
 
+        if "question" in parts:
+            idx = parts.index("question")
+            qid = parts[idx + 1] if idx + 1 < len(parts) else ""
+            return ZhihuTarget(
+                kind="question",
+                url=url,
+                question_id=_digits(qid) or qid,
+            )
+
         if len(parts) >= 2 and parts[0] == "p" and parts[1].isdigit():
             return ZhihuTarget(
                 kind="article",

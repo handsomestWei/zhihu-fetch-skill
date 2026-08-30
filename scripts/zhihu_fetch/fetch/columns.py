@@ -31,7 +31,14 @@ from zhihu_fetch.fetch.collection import (
 )
 from zhihu_fetch.core.summary import bump, empty_summary, finish, note
 from zhihu_fetch.core.paths import get_default_paths
-from zhihu_fetch.core.seen import canonical_url, collect_seen_urls, record_urls
+from zhihu_fetch.core.seen import record_urls
+from zhihu_fetch.core.times import attach_times
+from zhihu_fetch.core.filters import (
+    build_select_kwargs,
+    describe_filters,
+    remember_fetched,
+    take_counted,
+)
 
 
 def extract_column_id(url_or_id):
@@ -96,13 +103,16 @@ def normalize_column_article(item, column=None):
         return None
     title = (inner.get("title") or inner.get("excerpt_title") or "").strip()
     author = ((inner.get("author") or {}).get("name")) or ""
-    info = {
-        "url": url,
-        "title": title or f"article_{article_id}",
-        "author": author,
-        "voteup": inner.get("voteup_count", 0),
-        "type": inner.get("type") or "article",
-    }
+    info = attach_times(
+        {
+            "url": url,
+            "title": title or f"article_{article_id}",
+            "author": author,
+            "voteup": inner.get("voteup_count", 0),
+            "type": inner.get("type") or "article",
+        },
+        inner,
+    )
     if column:
         info["column_id"] = column.get("id") or ""
         info["column_title"] = column.get("title") or ""
@@ -138,15 +148,19 @@ def list_member_columns(slug, cookie_str=""):
     return all_items
 
 
-def fetch_column_articles(column_id, max_items=0, cookie_str="", skip_urls=None, stats=None):
+def fetch_column_articles(column_id, max_items=0, cookie_str="", skip_urls=None, stats=None, select_kwargs=None):
     print(f"[API] 获取专栏 {column_id} 文章")
     all_items = []
-    skipped = 0
-    skipped_seen = 0
-    http_403 = 0
+    local_stats = stats if stats is not None else {}
     offset = 0
     limit = 20
-    seen = set(skip_urls or [])
+    ctx = select_kwargs
+    if ctx is None:
+        ctx = build_select_kwargs(since_last=bool(skip_urls))
+        if skip_urls:
+            ctx["seen_urls"] = set(skip_urls)
+            ctx["since_last"] = True
+    http_403 = 0
 
     while True:
         url = (
@@ -172,40 +186,31 @@ def fetch_column_articles(column_id, max_items=0, cookie_str="", skip_urls=None,
         if not rows:
             break
         for row in rows:
-            info = normalize_column_article(row)
+            info = take_counted(normalize_column_article(row), ctx, local_stats)
             if not info:
-                skipped += 1
                 continue
-            key = canonical_url(info["url"])
-            if key in seen:
-                skipped_seen += 1
-                continue
-            seen.add(key)
             all_items.append(info)
             if max_items and len(all_items) >= max_items:
                 print(
-                    f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+                    f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {local_stats.get('skipped_empty', 0)}，"
+                    f"已抓 {local_stats.get('skipped_seen', 0)}，过滤 {local_stats.get('skipped_filter', 0)}"
                 )
-                if stats is not None:
-                    stats["skipped_empty"] = skipped
-                    stats["skipped_seen"] = skipped_seen
-                    stats["http_403"] = http_403
+                local_stats["http_403"] = http_403
                 return all_items
         print(
             f"  本页 {len(rows)} 条，有效累计 {len(all_items)}，"
-            f"跳过空 {skipped}，已抓 {skipped_seen}"
+            f"跳过空 {local_stats.get('skipped_empty', 0)}，已抓 {local_stats.get('skipped_seen', 0)}，"
+            f"过滤 {local_stats.get('skipped_filter', 0)}"
         )
         if paging.get("is_end", True):
             break
         offset += limit
         time.sleep(0.4)
     print(
-        f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+        f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {local_stats.get('skipped_empty', 0)}，"
+        f"已抓 {local_stats.get('skipped_seen', 0)}，过滤 {local_stats.get('skipped_filter', 0)}"
     )
-    if stats is not None:
-        stats["skipped_empty"] = skipped
-        stats["skipped_seen"] = skipped_seen
-        stats["http_403"] = http_403
+    local_stats["http_403"] = http_403
     return all_items
 
 
@@ -218,6 +223,7 @@ def main():
         print("用法: python fetch_zhihu_columns.py <个人主页|/columns|专栏URL> [--column 名称]")
         print("      python fetch_zhihu_columns.py <个人主页> --list-only")
         print("上限见 zhihu_fetch_config.json 的 column.* ；--all 取消限制；--since-last 只补新条目")
+        print("      --min-voteup N  --days N  --since ISO  列表过滤")
         sys.exit(1)
 
     url_or_id = sys.argv[1]
@@ -234,9 +240,12 @@ def main():
     )
     list_only = "--list-only" in sys.argv
     since_last = "--since-last" in sys.argv
-    skip_urls = collect_seen_urls() if since_last else None
+    select_kwargs = build_select_kwargs(since_last=since_last)
+    filt = describe_filters(select_kwargs)
+    if filt:
+        print(f"[过滤] {filt}")
     if since_last:
-        print(f"[增量] 已记录 URL {len(skip_urls or [])} 条")
+        print(f"[增量] 已记录 URL {len(select_kwargs.get('seen_urls') or [])} 条")
 
     workspace = get_default_paths()["workspace"]
     os.makedirs(workspace, exist_ok=True)
@@ -287,7 +296,7 @@ def main():
             print(f"=== {col['title']} ({col['id']}) ===")
             stats = {}
             items = fetch_column_articles(
-                col["id"], per_column, cookie_str, skip_urls=skip_urls, stats=stats
+                col["id"], per_column, cookie_str, select_kwargs=select_kwargs, stats=stats
             )
             bump(run, "skipped_empty", stats.get("skipped_empty", 0))
             bump(run, "skipped_seen", stats.get("skipped_seen", 0))
@@ -317,11 +326,10 @@ def main():
                     "items": capped,
                 },
             )
-            record_urls(capped, f"column:{col['id']}", workspace)
+            record_urls(capped, f"column:{col['id']}", workspace, index=select_kwargs.get("index"))
+            remember_fetched(select_kwargs, capped)
             bump(run, "success", len(capped))
             run["outputs"].append(out)
-            if skip_urls is not None:
-                skip_urls.update(canonical_url(it.get("url")) for it in capped if it.get("url"))
 
         tree_path = os.path.join(workspace, f"zhihu_columns_{slug}.json")
         save_json(tree_path, tree)
@@ -341,7 +349,7 @@ def main():
     run = empty_summary(f"column:{column_id}")
     col = {"id": column_id, "title": column_id, "url": f"https://www.zhihu.com/column/{column_id}"}
     stats = {}
-    items = fetch_column_articles(column_id, per_column, cookie_str, skip_urls=skip_urls, stats=stats)
+    items = fetch_column_articles(column_id, per_column, cookie_str, select_kwargs=select_kwargs, stats=stats)
     bump(run, "skipped_empty", stats.get("skipped_empty", 0))
     bump(run, "skipped_seen", stats.get("skipped_seen", 0))
     bump(run, "http_403", stats.get("http_403", 0))
@@ -368,7 +376,8 @@ def main():
             "items": capped,
         },
     )
-    record_urls(capped, f"column:{column_id}", workspace)
+    record_urls(capped, f"column:{column_id}", workspace, index=select_kwargs.get("index"))
+    remember_fetched(select_kwargs, capped)
     bump(run, "success", len(capped))
     run["outputs"].append(out)
     finish(run, workspace)

@@ -28,7 +28,14 @@ sys.stdout.reconfigure(encoding="utf-8")
 from zhihu_fetch.core.limits import describe_limit, resolve_limit
 from zhihu_fetch.core.summary import bump, empty_summary, finish, note
 from zhihu_fetch.core.paths import get_default_paths
-from zhihu_fetch.core.seen import collect_seen_urls, record_urls
+from zhihu_fetch.core.seen import record_urls
+from zhihu_fetch.core.times import attach_times
+from zhihu_fetch.core.filters import (
+    build_select_kwargs,
+    describe_filters,
+    remember_fetched,
+    take_counted,
+)
 
 FAVLIST_INCLUDE = (
     "data[*].answer_count,follower_count,updated_time,description,is_public"
@@ -145,13 +152,16 @@ def normalize_collection_item(content):
     if not url:
         return None
     author = ((content.get("author") or {}).get("name")) or ""
-    return {
-        "url": url,
-        "title": title,
-        "author": author,
-        "voteup": content.get("voteup_count", 0),
-        "type": ctype,
-    }
+    return attach_times(
+        {
+            "url": url,
+            "title": title,
+            "author": author,
+            "voteup": content.get("voteup_count", 0),
+            "type": ctype,
+        },
+        content,
+    )
 
 
 def _request_json(url, cookie_str="", referer="https://www.zhihu.com/"):
@@ -213,16 +223,20 @@ def fetch_via_api(collection_id, max_items=0, cookie_str=""):
     return items
 
 
-def fetch_via_api_with_status(collection_id, max_items=0, cookie_str="", skip_urls=None):
+def fetch_via_api_with_status(collection_id, max_items=0, cookie_str="", skip_urls=None, select_kwargs=None):
     """Fetch collection items via API. status is HTTP code or 0 on other errors."""
     print(f"[API] 获取收藏夹 {collection_id}")
     all_items = []
-    skipped = 0
-    skipped_seen = 0
+    stats = {}
     offset = 0
     limit = 20
     last_status = 0
-    seen = set(skip_urls or [])
+    ctx = select_kwargs
+    if ctx is None:
+        ctx = build_select_kwargs(since_last=bool(skip_urls))
+        if skip_urls:
+            ctx["seen_urls"] = set(skip_urls)
+            ctx["since_last"] = True
 
     while True:
         url = (
@@ -249,27 +263,22 @@ def fetch_via_api_with_status(collection_id, max_items=0, cookie_str="", skip_ur
             break
 
         for row in rows:
-            info = normalize_collection_item(row.get("content") or {})
+            info = take_counted(normalize_collection_item(row.get("content") or {}), ctx, stats)
             if not info:
-                skipped += 1
                 continue
-            from zhihu_fetch.core.seen import canonical_url
-
-            key = canonical_url(info["url"])
-            if key in seen:
-                skipped_seen += 1
-                continue
-            seen.add(key)
             all_items.append(info)
             if max_items and len(all_items) >= max_items:
                 print(
-                    f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+                    f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {stats.get('skipped_empty', 0)}，"
+                    f"已抓 {stats.get('skipped_seen', 0)}，过滤 {stats.get('skipped_filter', 0)}，"
+                    f"刷新 {stats.get('refresh', 0)}"
                 )
                 return all_items, last_status
 
         print(
             f"  本页 {len(rows)} 条，有效累计 {len(all_items)}，"
-            f"跳过空 {skipped}，已抓 {skipped_seen}"
+            f"跳过空 {stats.get('skipped_empty', 0)}，已抓 {stats.get('skipped_seen', 0)}，"
+            f"过滤 {stats.get('skipped_filter', 0)}"
         )
         if paging.get("is_end", True):
             break
@@ -277,12 +286,14 @@ def fetch_via_api_with_status(collection_id, max_items=0, cookie_str="", skip_ur
         time.sleep(0.5)
 
     print(
-        f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}，已抓 {skipped_seen}"
+        f"[API] 完成，有效 {len(all_items)} 条，跳过空项 {stats.get('skipped_empty', 0)}，"
+        f"已抓 {stats.get('skipped_seen', 0)}，过滤 {stats.get('skipped_filter', 0)}，"
+        f"刷新 {stats.get('refresh', 0)}"
     )
     return all_items, last_status
 
 
-async def fetch_via_browser(collection_id, max_items=0):
+async def fetch_via_browser(collection_id, max_items=0, select_kwargs=None):
     """In-page fetch of the items API using the persistent Chrome profile."""
     print(f"[浏览器] 获取收藏夹 {collection_id}")
     try:
@@ -293,7 +304,8 @@ async def fetch_via_browser(collection_id, max_items=0):
 
     paths = get_default_paths()
     all_items = []
-    skipped = 0
+    stats = {}
+    ctx = select_kwargs or build_select_kwargs()
 
     async with async_playwright() as p:
         context = await p.chromium.launch_persistent_context(
@@ -355,15 +367,14 @@ async def fetch_via_browser(collection_id, max_items=0):
             if not rows:
                 break
             for row in rows:
-                info = normalize_collection_item(row.get("content") or {})
+                info = take_counted(normalize_collection_item(row.get("content") or {}), ctx, stats)
                 if not info:
-                    skipped += 1
                     continue
                 all_items.append(info)
                 if max_items and len(all_items) >= max_items:
                     await context.close()
                     print(
-                        f"[浏览器] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}"
+                        f"[浏览器] 完成，有效 {len(all_items)} 条，跳过空项 {stats.get('skipped_empty', 0)}"
                     )
                     return all_items
             if paging.get("is_end", True):
@@ -373,14 +384,14 @@ async def fetch_via_browser(collection_id, max_items=0):
 
         await context.close()
 
-    print(f"[浏览器] 完成，有效 {len(all_items)} 条，跳过空项 {skipped}")
+    print(f"[浏览器] 完成，有效 {len(all_items)} 条，跳过空项 {stats.get('skipped_empty', 0)}")
     return all_items
 
 
-def fetch_collection_items(collection_id, max_items=0, allow_browser=True, skip_urls=None):
+def fetch_collection_items(collection_id, max_items=0, allow_browser=True, skip_urls=None, select_kwargs=None):
     cookie_str = load_cookies()
     items, status = fetch_via_api_with_status(
-        collection_id, max_items, cookie_str, skip_urls=skip_urls
+        collection_id, max_items, cookie_str, skip_urls=skip_urls, select_kwargs=select_kwargs
     )
     if items:
         return items
@@ -389,7 +400,7 @@ def fetch_collection_items(collection_id, max_items=0, allow_browser=True, skip_
         return []
     if allow_browser:
         print("\n[API] 无有效条目，降级到浏览器...")
-        return asyncio.run(fetch_via_browser(collection_id, max_items))
+        return asyncio.run(fetch_via_browser(collection_id, max_items, select_kwargs=select_kwargs))
     return []
 
 
@@ -415,6 +426,7 @@ def main():
         print("      python fetch_zhihu_collection.py <个人主页> --per-collection [N] [--collection 名称]")
         print("      python fetch_zhihu_collection.py <个人主页> --list-only")
         print("      上限见 zhihu_fetch_config.json；--all 取消限制；--since-last 只补新条目")
+        print("      --min-voteup N  --days N  --since ISO  列表过滤")
         sys.exit(1)
 
     url_or_id = sys.argv[1]
@@ -433,9 +445,12 @@ def main():
     list_only = "--list-only" in sys.argv
     collection_name = optional_arg("--collection")
     since_last = "--since-last" in sys.argv
-    skip_urls = collect_seen_urls() if since_last else None
+    select_kwargs = build_select_kwargs(since_last=since_last)
+    filt = describe_filters(select_kwargs)
+    if filt:
+        print(f"[过滤] {filt}")
     if since_last:
-        print(f"[增量] 已记录 URL {len(skip_urls or [])} 条")
+        print(f"[增量] 已记录 URL {len(select_kwargs.get('seen_urls') or [])} 条")
 
     workspace = get_default_paths()["workspace"]
     os.makedirs(workspace, exist_ok=True)
@@ -484,7 +499,7 @@ def main():
             cid = fav["id"]
             print()
             print(f"=== {fav['title']} ({cid}) 抽 {describe_limit(per_collection)} 篇 ===")
-            items = fetch_collection_items(cid, per_collection, skip_urls=skip_urls)
+            items = fetch_collection_items(cid, per_collection, select_kwargs=select_kwargs)
             if not items:
                 print(f"[跳过] 收藏夹 {cid} 无有效条目")
                 continue
@@ -499,12 +514,10 @@ def main():
                     "items": capped,
                 },
             )
-            record_urls(capped, f"collection:{cid}", workspace)
+            record_urls(capped, f"collection:{cid}", workspace, index=select_kwargs.get("index"))
+            remember_fetched(select_kwargs, capped)
             bump(run, "success", len(capped))
             run["outputs"].append(out)
-            if skip_urls is not None:
-                from zhihu_fetch.core.seen import canonical_url as _canon
-                skip_urls.update(_canon(it.get("url")) for it in capped if it.get("url"))
         finish(run, workspace)
         return
 
@@ -518,7 +531,7 @@ def main():
     print()
 
     run = empty_summary(f"collection:{collection_id}")
-    items = fetch_collection_items(collection_id, max_items, skip_urls=skip_urls)
+    items = fetch_collection_items(collection_id, max_items, select_kwargs=select_kwargs)
     if not items:
         print("\n获取失败或收藏夹为空，已跳过。")
         print("若条目 API 返回 401，请运行 python scripts/zhihu.py relogin")
@@ -532,7 +545,8 @@ def main():
         out,
         {"total": len(items), "collection_id": collection_id, "items": items},
     )
-    record_urls(items, f"collection:{collection_id}", workspace)
+    record_urls(items, f"collection:{collection_id}", workspace, index=select_kwargs.get("index"))
+    remember_fetched(select_kwargs, items)
     bump(run, "success", len(items))
     run["outputs"].append(out)
     finish(run, workspace)

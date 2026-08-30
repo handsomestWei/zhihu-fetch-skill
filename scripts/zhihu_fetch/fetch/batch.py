@@ -44,7 +44,7 @@ CONSECUTIVE_FAIL_INTERRUPT = True   # 连续失败是否中断
 from zhihu_fetch.core.limits import describe_limit, resolve_limit
 from zhihu_fetch.core.summary import bump, empty_summary, finish, merge_failed_reasons, note
 from zhihu_fetch.core.paths import get_default_paths, get_scripts_dir
-from zhihu_fetch.core.seen import record_urls
+from zhihu_fetch.core.seen import canonical_url, record_urls
 
 def save_cookies(cookies_dict):
     """保存 cookie 到文件"""
@@ -324,6 +324,9 @@ def extra_frontmatter(item):
         'column_title',
         'collection_id',
         'collection_title',
+        'question_id',
+        'content_updated',
+        'refresh',
     ]
     lines = []
     for key in keys:
@@ -476,6 +479,21 @@ async def main():
     completed_urls = set(progress.get('completed', []))
     failed_urls = {f['url'] for f in progress.get('failed', [])}
     already_done_at_start = len(completed_urls)
+    refresh_canon = {
+        canonical_url(item.get('url'))
+        for item in items
+        if item.get('refresh') and item.get('url')
+    }
+    if refresh_canon:
+        before = len(completed_urls)
+        completed_urls = {
+            url for url in completed_urls if canonical_url(url) not in refresh_canon
+        }
+        dropped = before - len(completed_urls)
+        if dropped:
+            progress['completed'] = list(completed_urls)
+            save_progress(progress_file, progress)
+            print(f"[刷新] 内容有更新，重抓 {dropped} 条（不因 _progress.json completed 跳过）")
     auto_retry_max = 0 if '--no-auto-retry' in sys.argv else int_arg('--auto-retry', 3)
     
     # --no-interrupt 模式：不因连续失败中断
@@ -509,6 +527,7 @@ async def main():
     print(f"输出目录: {output_dir}")
     print(f"图片目录: {images_dir}")
     print()
+    completed_canon = {canonical_url(u) for u in completed_urls}
     
     print("启动浏览器（持久化上下文）...")
     
@@ -707,7 +726,7 @@ async def main():
                 continue
             
             # 跳过已完成
-            if url in completed_urls:
+            if url in completed_urls or canonical_url(url) in completed_canon:
                 skip += 1
                 continue
             
@@ -864,6 +883,7 @@ images: {len(images)}
                     
                     # 更新进度
                     completed_urls.add(url)
+                    completed_canon.add(canonical_url(url))
                     progress['completed'] = list(completed_urls)
                     save_progress(progress_file, progress)
                 else:

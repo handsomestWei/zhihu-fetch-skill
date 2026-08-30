@@ -1,9 +1,9 @@
 ---
 name: zhihu-fetcher
 description: "知乎收藏夹与文章内容抓取：API/Playwright 多级降级、Cookie 持久化与保活、批量正文与图片、断点续传、可选写入 Obsidian。| Zhihu collection scraping, batch article fetch, Obsidian export."
-version: "2.1.0"
+version: "2.2.0"
 user-invocable: true
-argument-hint: "[知乎链接：收藏夹/专栏/文章/回答/个人页；或输出目录、Vault 路径]"
+argument-hint: "[知乎链接：收藏夹/专栏/文章/回答/问题页/个人页；或输出目录、Vault 路径]"
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 ---
 
@@ -38,9 +38,11 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 
 用户说「这次多抓一点」→ 命令行 `--max-items` / `--all`。用户说「以后默认每夹 10 篇」→ **改配置并固化**，不要只改当次命令。
 
-默认：收藏夹最多 10 个、每夹 20 篇；专栏最多 5 个、每栏 20 篇；个人文章/回答各 20 篇；历史/批量各 20 篇。
+默认：收藏夹最多 10 个、每夹 20 篇；专栏最多 5 个、每栏 20 篇；个人文章/回答各 20 篇；问题页回答 20 条；历史/批量各 20 篇。
 
-**增量**：列表脚本支持 **`--since-last`**，对照工作区 `zhihu_url_index.json`、已有 `zhihu_*.json`、`_progress.json` 与 Markdown frontmatter 的 `url:`，只补尚未抓过的条目。个人「文章」默认还会按 URL 排除已在专栏 JSON 里的篇目（两者重叠）。
+**增量**：列表脚本支持 **`--since-last`**，对照工作区 `zhihu_url_index.json`（含 `content_updated`）、已有 `zhihu_*.json`、`_progress.json` 与 Markdown frontmatter 的 `url:`。未更新的已见 URL 跳过；列表里的更新时间**新于索引**则标 `refresh` 再抓，`batch` **不会**因 `_progress.json` 的 `completed` 跳过这些条。个人「文章」默认还会按 URL 排除已在专栏 JSON 里的篇目（两者重叠，有更新仍会刷新）。
+
+**列表过滤**（条数上限之外）：`--min-voteup N`、`--days N`、`--since ISO`。配置 `filter.min_voteup` / `filter.since_days`（`0` = 不过滤）。作用在收藏夹 / 专栏 / 文章 / 回答 / 问题页 / 跟读包。`max_items` 只计通过过滤且为 new/refresh 的条目。
 
 **登录态正文**：工作区有 Cookie 时，API / 页面 / 批量图片下载都会自动带上，降低专栏文章 403。未登录先跑 `python scripts/zhihu.py login` / `relogin`。
 
@@ -84,7 +86,8 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | `/people/{slug}/columns` 或 `/column/{id}` | columns / column | `zhihu.py columns`；`--column 名称` 只爬一栏 |
 | `/people/{slug}/posts` | posts | `zhihu.py posts --kind articles` |
 | `/people/{slug}/answers` | answers | `zhihu.py posts --kind answers` |
-| 裸 `/people/{slug}` | people | **打印栏目帮助后退出码 2**；补全路径或加 `--posts` / `--answers` / `--columns` / `--collections` / `--history` |
+| `/question/{id}`（无 `/answer/`） | question | `zhihu.py question`：默认排序回答列表 → JSON，再 `batch`；上限 `question.max_answers` |
+| 裸 `/people/{slug}` | people | **跟读包**：专栏 + 文章 + 回答（默认 `--since-last`，可用 `--no-since-last` 关掉）。单栏目仍用 `--posts` / `--answers` / `--columns` / `--collections` / `--history` |
 
 ### 常见任务与建议方式
 
@@ -94,9 +97,12 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | 获取收藏夹 JSON 列表 | **`Bash`** → `python scripts/zhihu.py collection <收藏夹URL或ID>`；个人页加 `--collection CS` 只爬该夹；`--since-last` 只补新 |
 | 获取用户专栏列表与文章 | **`Bash`** → `python scripts/zhihu.py columns <people URL 或 /columns>`；`--column 名称` 只爬指定专栏；`--since-last` 只补新；层级 JSON + 每栏 `zhihu_column_{id}.json` 可交给 batch |
 | 获取个人页文章 / 回答 | **`Bash`** → `python scripts/zhihu.py posts <people URL> --kind articles\|answers\|both`；文章默认排除已在专栏里的 URL；`--since-last` 只补新 |
+| 裸个人页跟读 | **`Bash`** → `python scripts/zhihu.py route <people URL>` 或 `follow`；默认专栏+文章+回答+增量 |
+| 问题页回答列表 | **`Bash`** → `python scripts/zhihu.py route <question URL>` 或 `question`；再 `batch` |
 | 获取个人主页点赞/收藏历史 | **`Bash`** → `python scripts/zhihu.py history <people URL 或 slug> <起始时间ISO> <输出.json> [--until <结束时间ISO>]`；按活动时间保留 `interaction_*` 元数据，支持断点续跑 |
 | 批量抓取正文与图片 | **`Bash`** → `python scripts/zhihu.py batch <列表.json> [输出目录] [图片目录]`；默认输出目录见「路径约定」；结束写 `zhihu_run_summary.json` |
-| 写入 Obsidian Vault | **`Bash`** → `python scripts/zhihu.py obsidian <文章目录> [Vault路径]`；Vault：命令行优先，否则环境变量 **`OBSIDIAN_VAULT`**；会先找 `<文章目录>/images`，否则兼容同级 **`zhihu_images`** |
+| 写入 Obsidian 原文镜像 | **`Bash`** → `python scripts/zhihu.py obsidian <文章目录> [Vault路径]`；写入 **`{Vault}/知乎收藏/{分类}/`**（会删工作区源 md）；Vault：命令行优先，否则 **`OBSIDIAN_VAULT`** |
+| 从镜像生成笔记 | **`Bash`** → `python scripts/zhihu.py notes [Vault路径]`；扫描「知乎收藏」，写入并列根目录 **`{Vault}/知乎笔记/`**，**不改、不删镜像**；已有笔记默认跳过，`--force` 覆盖 |
 | 写入个人历史到 Obsidian | **`Bash`** → `python scripts/zhihu.py history-obsidian <文章目录> <Vault路径> [.]`；默认写入 `{Vault}/知乎收藏/{分类}/`，按 URL 去重更新 |
 | 写入失败项清单 | **`Bash`** → `python scripts/zhihu.py failures <Vault路径> <标签>:<progress.json> ...`；生成 `{Vault}/知乎收藏/抓取失败.md` |
 | Cookie 失效需人工登录 | **`Bash`** → `python scripts/zhihu.py relogin`（会打开浏览器窗口） |
@@ -115,11 +121,11 @@ scripts/
   zhihu.py                 # 唯一 CLI
   requirements.txt
   zhihu_fetch/
-    core/                  # paths, limits, url, seen, summary
-    fetch/                 # route, collection, columns, posts, history, batch, single
+    core/                  # paths, limits, url, seen, times, filters, summary
+    fetch/                 # route, collection, columns, posts, follow, question, history, batch, single
     body/                  # api, stealth, interactive
     auth/                  # login, relogin, login_save
-    export/                # obsidian, history, failures, classify
+    export/                # obsidian, notes, history, failures, classify
 ```
 
 | 命令 | 模块 | 用途 |
@@ -128,12 +134,14 @@ scripts/
 | `collection` | `fetch/collection.py` | 收藏夹列表；`--collection`、`--since-last` |
 | `columns` | `fetch/columns.py` | 用户专栏；`--column`、`--since-last` |
 | `posts` | `fetch/posts.py` | 个人文章 / 回答；与专栏 URL 去重 |
+| `follow` | `fetch/follow.py` | 裸主页跟读包（专栏+文章+回答） |
+| `question` | `fetch/question.py` | 问题页默认排序回答列表 |
 | `history` | `fetch/history.py` | 点赞/收藏动态 |
 | `batch` | `fetch/batch.py` | 批量正文、图片、断点续传、摘要 |
 | `fetch` | `fetch/single.py` | 单篇文章/回答 |
 | `api` / `stealth` / `interactive` | `body/` | 单篇调试 |
 | `login` / `relogin` / `login-save` | `auth/` | 登录与 Cookie |
-| `obsidian` / `history-obsidian` / `failures` | `export/` | 写入 Obsidian |
+| `obsidian` / `notes` / `history-obsidian` / `failures` | `export/` | 原文镜像 / 并列笔记 / 历史 / 失败清单 |
 | `limits` | `core/limits.py` | 抓取上限配置 |
 
 ---
@@ -143,8 +151,9 @@ scripts/
 1. **安装依赖**：`scripts/requirements.txt` + Chromium。
 2. **用户给出链接**：**`python scripts/zhihu.py route <URL>`**（不要凭印象选模块）。
 3. 列表得到 JSON 后 **`python scripts/zhihu.py batch`** → **`zhihu_articles_*/`**（含 **`_progress.json`**、**`images/`**、编号 **`*.md`**）。
-4. （可选）**`python scripts/zhihu.py obsidian`** → 同步到 **`{Vault}/知乎收藏/{分类}/`**。
-5. 回复用户前读 **`zhihu_run_summary.json`**。
+4. （可选）**`python scripts/zhihu.py obsidian`** → 原文镜像到 **`{Vault}/知乎收藏/{分类}/`**。
+5. （可选）**`python scripts/zhihu.py notes`** → 从「知乎收藏」生成并列的 **`{Vault}/知乎笔记/`**（不改镜像）。
+6. 回复用户前读 **`zhihu_run_summary.json`**。
 
 中断批量任务时：**重新运行同一条** `python scripts/zhihu.py batch` 命令即可续跑（已完成 URL 记录在 `_progress.json`）。
 
@@ -205,16 +214,27 @@ python scripts/zhihu.py batch zhihu-fetch-workspace/zhihu_column_<id>.json
 
 ### 个人页文章 / 回答
 
-专栏只是作者产出的一部分。跟读某个作者时用 `/posts` 与 `/answers`；文章与专栏按 URL 去重后再抓。默认上限 `people.max_articles` / `people.max_answers`。
+专栏只是作者产出的一部分。跟读某个作者时，裸主页默认跑跟读包；也可以只用 `/posts` 与 `/answers`。文章与专栏按 URL 去重后再抓。默认上限 `people.max_articles` / `people.max_answers`。
 
 ```bash
+python scripts/zhihu.py route https://www.zhihu.com/people/<slug>
+python scripts/zhihu.py follow https://www.zhihu.com/people/<slug> --no-since-last
 python scripts/zhihu.py route https://www.zhihu.com/people/<slug>/posts
 python scripts/zhihu.py route https://www.zhihu.com/people/<slug>/answers
-python scripts/zhihu.py posts https://www.zhihu.com/people/<slug> --kind both --since-last
+python scripts/zhihu.py posts https://www.zhihu.com/people/<slug> --kind both --since-last --min-voteup 50 --days 30
 python scripts/zhihu.py batch zhihu-fetch-workspace/zhihu_posts_<slug>.json
 ```
 
 输出：`zhihu_posts_{slug}.json`、`zhihu_answers_{slug}.json`（可交给 batch）。
+
+### 问题页回答
+
+`https://www.zhihu.com/question/{id}`（不含 `/answer/`）拉默认排序回答列表，上限 `question.max_answers`。
+
+```bash
+python scripts/zhihu.py route https://www.zhihu.com/question/<id> --max-items 2
+python scripts/zhihu.py batch zhihu-fetch-workspace/zhihu_question_<id>.json
+```
 
 ---
 
@@ -284,9 +304,10 @@ images: 5
 
 ## Obsidian 写入要点
 
-- **Vault**：① **命令行第二个参数**（优先让用户直接写出 Vault 根路径）；② 未传时使用环境变量 **`OBSIDIAN_VAULT`**（单个路径）；③ 仍无时脚本按常见目录扫描，多个命中时再交互选择。
+- **原文镜像**：`python scripts/zhihu.py obsidian` 写入 **`{Vault}/知乎收藏/{分类}/{标题}.md`**，行为与旧版相同（分类、图片、删除工作区源 md）。**不要**把镜像改成笔记、不要覆盖已有镜像来当笔记。
+- **笔记板块**：`python scripts/zhihu.py notes [Vault]` 扫描「知乎收藏」，在 Vault **并列根目录**写入 **`{Vault}/知乎笔记/{分类}/`**，并维护 `知乎笔记/作者/`、`知乎笔记/问题/` 索引。不删除、不改写镜像。已有笔记默认跳过；Agent 可再润色摘要。
+- **Vault**：① **命令行参数**；② 环境变量 **`OBSIDIAN_VAULT`**；③ 常见目录扫描。
 - **分类**：优先对齐已有 **`知乎收藏/`** 子目录；否则按内容关键词；无法归类则 **「未分类」**。
-- **落盘**：**`{Vault}/知乎收藏/{分类}/{文章标题}.md`**；图片同步规则见 **`zhihu.py obsidian`**（目标侧常有集中 **`images`** 目录）。
 
 ---
 
@@ -360,13 +381,13 @@ python scripts/zhihu.py batch <列表文件> [输出目录] [图片目录] --ret
 
 ```
 □ 已确认 scripts 依赖与 playwright chromium 可用；必要时提示用户设置 ZHIHU_WORKSPACE
-□ 用户丢了链接：先 python scripts/zhihu.py route，不要猜错模块；裸个人页要问栏目或补 /posts /answers /columns /collections
-□ 收藏夹：zhihu.py collection；指定夹名用 --collection；增量 --since-last；再 batch
-□ 专栏 / 文章 / 回答：columns 与 posts 分开抓，文章按 URL 去重；默认受配置上限，全量才 --all
+□ 用户丢了链接：先 python scripts/zhihu.py route，不要猜错模块；裸个人页默认跟读包（专栏+文章+回答）；单栏目用 --posts / --answers / --columns / --collections / --history
+□ 收藏夹：zhihu.py collection；指定夹名用 --collection；增量 --since-last；赞数/时间过滤 --min-voteup / --days / --since；再 batch
+□ 专栏 / 文章 / 回答 / 问题页：columns、posts、question；文章按 URL 去重；内容更新会 refresh；默认受配置上限，全量才 --all
 □ 正文入口有 Cookie 就带上；专栏 403 优先登录而非换抓取器
 □ 批量输出路径：知悉默认 {workspace}/zhihu_articles_* 与 images/ 子目录；第三个参数仅在自定义图片目录时需要
 □ 回复用户前读 zhihu_run_summary.json（成功/跳过/403/需登录）；失败清单可用 python scripts/zhihu.py failures
-□ Obsidian：`zhihu.py obsidian` 的文章目录含 *.md 与 images/；Vault 优先命令行路径或 **`OBSIDIAN_VAULT`**
+□ Obsidian 原文：`zhihu.py obsidian` → `{Vault}/知乎收藏/`；笔记：`zhihu.py notes` → `{Vault}/知乎笔记/`（并列，不改镜像）
 □ 遇验证页或全文为空：优先 Cookie/重登录，而非重复盲目加大并发
 □ 用户仅需单篇或调试：选用 python scripts/zhihu.py fetch（文章/回答），避免不必要批量
 ```

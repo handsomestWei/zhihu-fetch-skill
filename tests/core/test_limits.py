@@ -20,6 +20,7 @@ def test_defaults_match_skill_config():
     assert config_int("column.items_per_column") == DEFAULTS["column"]["items_per_column"]
     assert config_int("people.max_articles") == DEFAULTS["people"]["max_articles"]
     assert config_int("people.max_answers") == DEFAULTS["people"]["max_answers"]
+    assert config_int("question.max_answers") == DEFAULTS["question"]["max_answers"]
 
 
 def test_cli_overrides_config():

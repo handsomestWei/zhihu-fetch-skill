@@ -30,13 +30,15 @@ Cookie 经常失效，想要**持久化上下文 + 保活**？
 |------|------|
 | 收藏夹列表 | `zhihu.py collection`：优先 API，失败降级 Playwright DOM；`--collection 名称`、`--since-last` |
 | 用户专栏 | `zhihu.py columns`：`--column 名称`、`--since-last`，层级 JSON 可交给 batch |
-| 个人文章 / 回答 | `zhihu.py posts`：与专栏按 URL 去重；`--since-last` 只补新 |
-| 统一入口 | `zhihu.py route`：识别 `/collection/` `/columns` `/posts` `/answers` `/p/` 回答链接 |
+| 个人文章 / 回答 | `zhihu.py posts`：与专栏按 URL 去重；`--since-last` 只补新；内容更新会 refresh |
+| 跟读包 | `zhihu.py follow` / 裸主页 `route`：专栏 + 文章 + 回答 |
+| 问题页 | `zhihu.py question`：默认排序回答列表 |
+| 统一入口 | `zhihu.py route`：识别 `/collection/` `/columns` `/posts` `/answers` `/question/` `/p/` 回答链接 个人主页 |
 | 个人历史列表 | `zhihu.py history`：个人主页点赞/收藏动态，支持时间范围、断点续跑、互动时间元数据 |
 | 批量抓取 | `zhihu.py batch`：正文 Markdown、图片默认写入 `{输出目录}/images/`、`_progress.json` 断点续传、失败自动重试、API 回退 |
 | Cookie | 持久化浏览器上下文 + 定时保活；失效时用 `zhihu.py relogin` 手动登录 |
 | 单篇 / 调试 | `zhihu.py fetch` / `api` / `stealth` / `interactive` |
-| Obsidian | `zhihu.py obsidian`：Vault 检测、智能分类、同步图片；`history-obsidian` 按 URL 去重导入 |
+| Obsidian | `zhihu.py obsidian`：原文镜像到 `{Vault}/知乎收藏/`；`zhihu.py notes`：笔记到并列的 `{Vault}/知乎笔记/` |
 
 **依赖**：见 [`scripts/requirements.txt`](scripts/requirements.txt)，并需 `playwright install chromium`。
 
@@ -103,8 +105,11 @@ python scripts/zhihu.py collection <收藏夹URL或ID>
 # 2. 批量抓取正文与图片
 python scripts/zhihu.py batch <列表.json>
 
-# 3. 写入 Obsidian Vault（可选 Vault 路径）
+# 3. 原文镜像写入 Obsidian「知乎收藏」（可选 Vault 路径）
 python scripts/zhihu.py obsidian <文章目录> [Vault路径]
+
+# 4. 从「知乎收藏」生成并列的「知乎笔记」（不改镜像）
+python scripts/zhihu.py notes [Vault路径]
 ```
 
 用户专栏（`/people/<slug>/columns`，支持 `--column 名称`、`--since-last`）：
@@ -119,6 +124,8 @@ python scripts/zhihu.py batch zhihu-fetch-workspace/zhihu_column_<id>.json
 ```bash
 python scripts/zhihu.py route https://www.zhihu.com/people/<slug>/posts
 python scripts/zhihu.py route https://www.zhihu.com/people/<slug>/answers --since-last
+python scripts/zhihu.py route https://www.zhihu.com/people/<slug>
+python scripts/zhihu.py route https://www.zhihu.com/question/<id> --max-items 2
 ```
 
 收藏夹按名称筛选：

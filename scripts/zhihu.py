@@ -22,6 +22,8 @@ COMMANDS = {
     "collection": "zhihu_fetch.fetch.collection",
     "columns": "zhihu_fetch.fetch.columns",
     "posts": "zhihu_fetch.fetch.posts",
+    "follow": "zhihu_fetch.fetch.follow",
+    "question": "zhihu_fetch.fetch.question",
     "history": "zhihu_fetch.fetch.history",
     "batch": "zhihu_fetch.fetch.batch",
     "fetch": "zhihu_fetch.fetch.single",
@@ -32,6 +34,7 @@ COMMANDS = {
     "relogin": "zhihu_fetch.auth.relogin",
     "login-save": "zhihu_fetch.auth.login_save",
     "obsidian": "zhihu_fetch.export.obsidian",
+    "notes": "zhihu_fetch.export.notes",
     "history-obsidian": "zhihu_fetch.export.history",
     "failures": "zhihu_fetch.export.failures",
     "limits": "zhihu_fetch.core.limits",
@@ -53,12 +56,16 @@ def _print_help():
     print("  collection         收藏夹列表")
     print("  columns            用户专栏")
     print("  posts              个人文章 / 回答")
+    print("  follow             裸主页跟读包（专栏+文章+回答）")
+    print("  question           问题页高赞回答列表")
     print("  history            点赞/收藏动态")
     print("  batch              批量正文与图片")
     print("  fetch              单篇文章/回答")
     print("  api / stealth / interactive   单篇调试")
     print("  login / relogin / login-save  登录")
-    print("  obsidian / history-obsidian / failures")
+    print("  obsidian           原文镜像写入 Vault/知乎收藏")
+    print("  notes              从知乎收藏生成并列的知乎笔记")
+    print("  history-obsidian / failures")
     print("  limits             查看或固化抓取上限")
 
 

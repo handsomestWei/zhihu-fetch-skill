@@ -24,8 +24,12 @@ ZHIHU_TEMPLATE_RULES = {
     "生活杂谈": ["生活", "健康", "旅行", "电影", "读书", "随笔", "思考"],
 }
 
+# 原文镜像根目录（obsidian 写入，不改成笔记）
+ZHIHU_MIRROR_ROOT = "知乎收藏"
+# 笔记根目录，与镜像并列，不是其子目录
+ZHIHU_NOTES_ROOT = "知乎笔记"
 # 非文章分类的固定子目录
-ZHIHU_RESERVED_DIRS = frozenset({"images"})
+ZHIHU_RESERVED_DIRS = frozenset({"images", "作者", "问题"})
 
 
 def detect_existing_categories(vault_path):
@@ -34,7 +38,7 @@ def detect_existing_categories(vault_path):
     返回: {'zhihu': {分类名: 文章数}, 'vault': {一级目录: 文章数}}
     """
     categories = {}
-    zhihu_dir = os.path.join(vault_path, "知乎收藏")
+    zhihu_dir = os.path.join(vault_path, ZHIHU_MIRROR_ROOT)
 
     if os.path.exists(zhihu_dir):
         for item in os.listdir(zhihu_dir):
@@ -48,7 +52,10 @@ def detect_existing_categories(vault_path):
                 categories[item] = article_count
 
     vault_categories = {}
+    skip_vault = {ZHIHU_NOTES_ROOT, ".obsidian"}
     for item in os.listdir(vault_path):
+        if item in skip_vault:
+            continue
         item_path = os.path.join(vault_path, item)
         if os.path.isdir(item_path) and not item.startswith("."):
             article_count = len(

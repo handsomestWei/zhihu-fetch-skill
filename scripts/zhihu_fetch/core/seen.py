@@ -167,9 +167,11 @@ def filter_new_items(items, seen):
     return fresh, skipped
 
 
-def record_urls(items, source, workspace=None):
+def record_urls(items, source, workspace=None, index=None):
+    from zhihu_fetch.core.times import content_updated_of
+
     workspace = workspace or get_workspace_dir()
-    index = load_index(workspace)
+    index = index if index is not None else load_index(workspace)
     urls = index.setdefault("urls", {})
     now = datetime.now(timezone.utc).isoformat()
     added = 0
@@ -184,6 +186,11 @@ def record_urls(items, source, workspace=None):
         rec["updated_at"] = now
         if item.get("title"):
             rec["title"] = item.get("title")
+        ts = content_updated_of(item)
+        if ts:
+            rec["content_updated"] = ts
+        if item.get("refresh"):
+            rec["refreshed_at"] = now
         urls[url] = rec
         added += 1
     index["updated_at"] = now

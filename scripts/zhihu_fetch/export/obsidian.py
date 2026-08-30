@@ -21,6 +21,7 @@ from datetime import datetime
 from pathlib import Path
 
 from zhihu_fetch.export.classify import (
+    ZHIHU_MIRROR_ROOT,
     analyze_content_categories,
     classify_article,
     detect_existing_categories,
@@ -159,7 +160,7 @@ def sync_images(source_dir, vault_path):
         return 0
     
     # 目标图片目录
-    obsidian_images_dir = os.path.join(vault_path, '知乎收藏', 'images')
+    obsidian_images_dir = os.path.join(vault_path, ZHIHU_MIRROR_ROOT, 'images')
     os.makedirs(obsidian_images_dir, exist_ok=True)
     
     # 复制图片
@@ -184,7 +185,7 @@ def sync_images(source_dir, vault_path):
 
 def write_to_obsidian(article_files, vault_path, source_dir):
     """将文章写入 Obsidian Vault"""
-    zhihu_dir = os.path.join(vault_path, '知乎收藏')
+    zhihu_dir = os.path.join(vault_path, ZHIHU_MIRROR_ROOT)
     os.makedirs(zhihu_dir, exist_ok=True)
 
     # 检测已有分类

@@ -48,6 +48,13 @@ DEFAULTS = {
         "max_articles": 20,
         "max_answers": 20,
     },
+    "question": {
+        "max_answers": 20,
+    },
+    "filter": {
+        "min_voteup": 0,
+        "since_days": 0,
+    },
 }
 
 

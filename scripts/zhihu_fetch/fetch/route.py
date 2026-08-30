@@ -25,23 +25,10 @@ def _rest():
     return [arg for arg in sys.argv[2:]]
 
 
-def _help_people(target):
-    slug = target.slug
-    base = f"https://www.zhihu.com/people/{slug}"
-    print(f"个人主页: {base}")
-    print("未指定栏目。请用完整路径或参数：")
-    print(f"  收藏夹  {base}/collections   或  --collections")
-    print(f"  专栏    {base}/columns       或  --columns / --column 名称")
-    print(f"  文章    {base}/posts         或  --posts")
-    print(f"  回答    {base}/answers       或  --answers")
-    print("  动态    需起始时间: python scripts/zhihu.py history <主页> <cutoff-iso>")
-    sys.exit(2)
-
-
 def main():
     if len(sys.argv) < 2:
         print("用法: python scripts/zhihu.py route <知乎URL> [参数]")
-        print("识别: /collection/ /columns /posts /answers /p/ 回答链接 个人主页")
+        print("识别: /collection/ /columns /posts /answers /p/ 回答链接 /question/ 个人主页")
         sys.exit(1)
 
     raw = sys.argv[1]
@@ -85,8 +72,10 @@ def main():
         _run("zhihu_fetch.fetch.posts", [target.people_url() or raw, *extra, *rest])
     if kind == "history":
         _run("zhihu_fetch.fetch.history", [target.people_url() or raw, *rest])
+    if kind == "question":
+        _run("zhihu_fetch.fetch.question", [target.url or raw, *rest])
     if kind == "people":
-        _help_people(target)
+        _run("zhihu_fetch.fetch.follow", [target.people_url() or raw, *rest])
 
     print(f"无法识别链接: {raw}")
     sys.exit(1)

@@ -25,6 +25,9 @@ def test_classify_article_and_answer():
     assert ans.kind == "answer"
     assert ans.answer_id == "2"
     assert ans.question_id == "1"
+    q = classify_zhihu_url("https://www.zhihu.com/question/123456")
+    assert q.kind == "question"
+    assert q.question_id == "123456"
 
 
 def test_classify_column_url():
@@ -72,6 +75,14 @@ def test_collection_matches_name_or_id():
     assert collection_matches(fav, "111")
     assert not collection_matches(fav, "算法")
     assert collection_matches(fav, "")
+
+
+def test_extract_question_id():
+    from zhihu_fetch.fetch.question import extract_question_id
+
+    assert extract_question_id("https://www.zhihu.com/question/99") == "99"
+    assert extract_question_id("https://www.zhihu.com/question/99/answer/1") == "99"
+    assert extract_question_id("99") == "99"
 
 
 def test_normalize_article_and_answer():
