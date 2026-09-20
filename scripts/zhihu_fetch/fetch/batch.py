@@ -15,8 +15,6 @@ import json
 import re
 import sys
 import os
-import urllib.request
-import hashlib
 import random
 import subprocess
 
@@ -41,10 +39,15 @@ MAX_RECOVERY_ATTEMPTS = 3           # Cookie失效最大恢复尝试次数
 CONSECUTIVE_FAIL_THRESHOLD = 5      # 连续失败阈值
 CONSECUTIVE_FAIL_INTERRUPT = True   # 连续失败是否中断
 
-from zhihu_fetch.core.limits import describe_limit, resolve_limit
+from zhihu_fetch.core.limits import describe_limit, resolve_limit, config_float
 from zhihu_fetch.core.summary import bump, empty_summary, finish, merge_failed_reasons, note
 from zhihu_fetch.core.paths import get_default_paths, get_scripts_dir
 from zhihu_fetch.core.seen import canonical_url, record_urls
+from zhihu_fetch.fetch.resources import (
+    GONE_REASONS,
+    is_resource_gone,
+    try_download_image,
+)
 
 def save_cookies(cookies_dict):
     """保存 cookie 到文件"""
@@ -125,45 +128,25 @@ async def save_browser_cookies(context):
         print(f"  [!] 保存Cookie失败: {e}")
         return None
 
+def _cookie_header():
+    cookies = load_cookies()
+    if not cookies:
+        return ""
+    parts = []
+    for name, value in cookies.items():
+        if isinstance(value, dict):
+            value = value.get("value", "")
+        if value:
+            parts.append(f"{name}={value}")
+    return "; ".join(parts)
+
+
 def download_image(url, save_dir):
-    """下载图片到本地，返回文件名"""
-    try:
-        # 清理 URL
-        url = url.split('?')[0] if '?' in url else url
-        
-        # 生成文件名
-        url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
-        ext = '.jpg'
-        if '.png' in url:
-            ext = '.png'
-        elif '.gif' in url:
-            ext = '.gif'
-        elif '.webp' in url:
-            ext = '.webp'
-        
-        filename = f"{url_hash}{ext}"
-        filepath = os.path.join(save_dir, filename)
-        
-        # 如果已下载过，直接返回
-        if os.path.exists(filepath):
-            return filename
-        
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            'Referer': 'https://zhuanlan.zhihu.com/',
-        }
-        cookies = load_cookies()
-        if cookies:
-            headers['Cookie'] = '; '.join(f'{k}={v}' for k, v in cookies.items() if v)
-        req = urllib.request.Request(url, headers=headers)
-        
-        with urllib.request.urlopen(req, timeout=10) as response:
-            with open(filepath, 'wb') as f:
-                f.write(response.read())
-        
-        return filename
-    except Exception:
-        return None
+    """下载图片到本地，返回文件名。失效链接返回 None，不抛错。"""
+    filename, _status = try_download_image(
+        url, save_dir, cookie_header=_cookie_header(), log=True
+    )
+    return filename
 
 def html_to_markdown(html_content, images_dir=None):
     """将知乎文章 HTML 转换为干净的 Markdown"""
@@ -188,14 +171,18 @@ def html_to_markdown(html_content, images_dir=None):
         if not src:
             return ''
         
-        # 下载图片
+        # 下载图片；404/410 失效图跳过，不把死链写进正文
         if images_dir:
-            local_name = download_image(src, images_dir)
+            local_name, status = try_download_image(
+                src, images_dir, cookie_header=_cookie_header(), log=True
+            )
             if local_name:
                 downloaded_images.append(local_name)
                 image_sources[local_name] = src  # 保存原始链接
                 # 返回本地路径 + 原始链接注释
                 return f'\n\n![{alt}]({local_name})\n\n<!-- image_source: {src} -->\n\n'
+            if status in (404, 410, 451):
+                return f'\n\n[图片已失效]\n\n<!-- skipped_image {status}: {src} -->\n\n'
         
         return f'\n\n![{alt}]({src})\n\n'
     
@@ -349,6 +336,51 @@ def add_failure(progress, progress_file, url, reason, title='', index=0):
         })
         save_progress(progress_file, progress)
 
+DEFAULT_DELAY = 1.5
+DEFAULT_DELAY_JITTER = 0.7
+
+
+def _cli_float(flag, argv):
+    if flag not in argv:
+        return None
+    idx = argv.index(flag)
+    if idx + 1 >= len(argv) or str(argv[idx + 1]).startswith("--"):
+        return None
+    try:
+        return max(0.0, float(argv[idx + 1]))
+    except Exception:
+        return None
+
+
+def resolve_item_delay(argv=None):
+    """Return (base_seconds, jitter_seconds). Actual wait is uniform in [base-jitter, base+jitter]."""
+    argv = sys.argv if argv is None else argv
+    base = _cli_float("--delay", argv)
+    if base is None:
+        base = config_float("batch.delay", DEFAULT_DELAY)
+        if base <= 0:
+            base = DEFAULT_DELAY
+    jitter = _cli_float("--delay-jitter", argv)
+    if jitter is None:
+        jitter = config_float("batch.delay_jitter", DEFAULT_DELAY_JITTER)
+        if jitter < 0:
+            jitter = DEFAULT_DELAY_JITTER
+    return max(0.0, float(base)), max(0.0, float(jitter))
+
+
+def delay_window(base, jitter):
+    lo = max(0.0, base - jitter)
+    hi = max(lo, base + jitter)
+    return lo, hi
+
+
+def item_delay_seconds(base, jitter):
+    lo, hi = delay_window(base, jitter)
+    if hi <= lo:
+        return lo
+    return random.uniform(lo, hi)
+
+
 def int_arg(name, default):
     """Parse a simple integer flag: --flag 3."""
     if name not in sys.argv:
@@ -359,7 +391,7 @@ def int_arg(name, default):
         return default
 
 
-_FLAGS_WITH_VALUE = {"--auto-retry", "--max-items"}
+_FLAGS_WITH_VALUE = {"--auto-retry", "--max-items", "--delay", "--delay-jitter"}
 
 
 def positional_args():
@@ -425,15 +457,17 @@ async def fetch_via_page_api(page, url):
         }
     if result and result.get('status') == 403:
         return {'error': 'api_blocked_403'}
+    if result and result.get('status') in (404, 410, 451):
+        return {'error': f"api_failed:{result.get('status')}", 'status': result.get('status')}
     if result:
-        return {'error': f"api_failed:{result.get('status', 0)}"}
+        return {'error': f"api_failed:{result.get('status', 0)}", 'status': result.get('status', 0)}
     return None
 
 async def main():
     # 解析参数
     positionals = positional_args()
     if not positionals:
-        print("用法: python fetch_zhihu_batch.py <列表文件> [输出目录] [图片目录] [--max-items N] [--all]")
+        print("用法: python fetch_zhihu_batch.py <列表文件> [输出目录] [图片目录] [--max-items N] [--delay 秒] [--delay-jitter 秒] [--all]")
         print("示例: python fetch_zhihu_batch.py zhihu_collection_123.json")
         print("省略 --max-items 时使用 zhihu_fetch_config.json 的 batch.max_items")
         sys.exit(1)
@@ -470,6 +504,12 @@ async def main():
     if max_items:
         items = items[:max_items]
     print(f"[模式] 最多抓取 {describe_limit(max_items)} 篇")
+    delay_base, delay_jitter = resolve_item_delay()
+    delay_lo, delay_hi = delay_window(delay_base, delay_jitter)
+    print(
+        f"[模式] 篇间隔 {delay_base:g}±{delay_jitter:g} 秒"
+        f"（随机 {delay_lo:g}–{delay_hi:g}；--delay / --delay-jitter 或 batch.delay / batch.delay_jitter）"
+    )
     total = len(items)
     original_total = total
     
@@ -503,22 +543,24 @@ async def main():
         CONSECUTIVE_FAIL_INTERRUPT = False
         print("[模式] 连续失败不中断")
     
-    # --retry-failed 模式：只重试失败项
+    # --retry-failed 模式：只重试失败项（原文 404 已失效的不再重试）
     retry_failed = '--retry-failed' in sys.argv
+    gone_entries = [f for f in progress.get('failed', []) if f.get('reason') in GONE_REASONS]
+    gone_urls = {f['url'] for f in gone_entries}
     if retry_failed:
         print("[模式] 重试失败项")
-        retry_urls = {f['url'] for f in progress.get('failed', [])}
+        retryable = [f for f in progress.get('failed', []) if f.get('reason') not in GONE_REASONS]
+        retry_urls = {f['url'] for f in retryable}
         if retry_urls:
             items = [item for item in items if item.get('url', '') in retry_urls]
             total = len(items)
-            print(f"[模式] 本次仅重试 {total} 个失败项")
+            print(f"[模式] 本次仅重试 {total} 个失败项（跳过已失效 {len(gone_urls)}）")
         else:
             items = []
             total = 0
             print("[模式] 没有可重试的失败项")
-        # 清空 failed 列表，让本次重试重新记录仍失败的项
-        progress['failed'] = []
-        failed_urls = set()
+        progress['failed'] = list(gone_entries)
+        failed_urls = set(gone_urls)
         save_progress(progress_file, progress)
     
     print(f"总文章数: {total}")
@@ -528,6 +570,7 @@ async def main():
     print(f"图片目录: {images_dir}")
     print()
     completed_canon = {canonical_url(u) for u in completed_urls}
+    gone_canon = {canonical_url(u) for u in gone_urls}
     
     print("启动浏览器（持久化上下文）...")
     
@@ -691,9 +734,12 @@ async def main():
             print(f"  [记录] {len(pending_failures)} 条失败写入进度文件")
             pending_failures.clear()
 
-        def record_failure(url, reason, title, index):
-            """记录失败：先缓存，检查连续失败阈值"""
+        def record_failure(url, reason, title, index, consecutive=True):
+            """失败入账。原文已失效不要计入连续失败，避免整次抓取被中断。"""
             nonlocal consecutive_fails
+            if not consecutive:
+                add_failure(progress, progress_file, url, reason, title, index)
+                return False
             consecutive_fails += 1
             pending_failures.append({
                 'url': url,
@@ -701,11 +747,11 @@ async def main():
                 'title': title,
                 'index': index,
             })
-            
             if CONSECUTIVE_FAIL_INTERRUPT and consecutive_fails >= CONSECUTIVE_FAIL_THRESHOLD:
                 print(f"  [!] 连续失败 {consecutive_fails} 次，达到阈值，中断抓取")
                 print(f"  [!] 缓存的失败记录已丢弃（可能是登录/网络问题）")
-                return True  # 需要中断
+                pending_failures.clear()
+                return True
             return False
 
         def record_success():
@@ -725,7 +771,11 @@ async def main():
                 skip += 1
                 continue
             
-            # 跳过已完成
+            # 跳过已完成 / 已确认失效
+            if url in gone_urls or canonical_url(url) in gone_canon:
+                skip += 1
+                continue
+            
             if url in completed_urls or canonical_url(url) in completed_canon:
                 skip += 1
                 continue
@@ -749,7 +799,8 @@ async def main():
             print(f"[{i+1}/{total}] {title[:60]}")
             
             try:
-                await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                nav = await page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                nav_status = nav.status if nav else 0
                 await page.wait_for_timeout(2000)
                 
                 # 检查是否被重定向到验证页面或登录页
@@ -827,6 +878,20 @@ async def main():
                         print(f"  [API] DOM内容不足，使用 {fallback_data.get('source')} 回退")
                     elif fallback_data and fallback_data.get('error'):
                         fallback_error = fallback_data.get('error')
+                        if fallback_data.get('status'):
+                            nav_status = nav_status or fallback_data.get('status')
+                
+                page_title = article_data.get('title', '') or title
+                if is_resource_gone(nav_status, text_content, fallback_error) or is_resource_gone(
+                    nav_status, page_title, fallback_error
+                ):
+                    print(f"  [跳过] 原文已失效 (HTTP {nav_status or 404})")
+                    record_failure(url, 'http_404', title, i+1, consecutive=False)
+                    gone_urls.add(url)
+                    gone_canon.add(canonical_url(url))
+                    skip += 1
+                    await asyncio.sleep(item_delay_seconds(delay_base, delay_jitter))
+                    continue
                 
                 if text_content and len(text_content) > 100:
                     # 转换为 Markdown 并下载图片
@@ -887,11 +952,17 @@ images: {len(images)}
                     progress['completed'] = list(completed_urls)
                     save_progress(progress_file, progress)
                 else:
-                    print(f"  [跳过] 内容为空或太短")
+                    if is_resource_gone(nav_status, text_content, fallback_error):
+                        print(f"  [跳过] 原文已失效 (HTTP {nav_status or 404})")
+                        record_failure(url, 'http_404', title, i+1, consecutive=False)
+                        gone_urls.add(url)
+                        gone_canon.add(canonical_url(url))
+                    else:
+                        hint = f"（{fallback_error}）" if fallback_error else ""
+                        print(f"  [跳过] 内容为空或太短{hint}")
                     skip += 1
                 
-                # 随机延迟 0-2 秒（微秒级精度）
-                delay = random.uniform(0, 2)
+                delay = item_delay_seconds(delay_base, delay_jitter)
                 await asyncio.sleep(delay)
                 
             except Exception as e:
@@ -913,13 +984,16 @@ images: {len(images)}
     print(f"总进度: {len(completed_urls)}/{denominator} ({len(completed_urls)*100//denominator}%)")
     failed_count = len(progress.get('failed', []))
     if failed_count:
-        print(f"已记录失败: {failed_count} 条（可用 --retry-failed 重试）")
+        gone_n = len([f for f in progress.get('failed', []) if f.get('reason') in GONE_REASONS])
+        print(f"已记录失败: {failed_count} 条（其中失效跳过 {gone_n}；其余可用 --retry-failed）")
     print("=" * 60)
 
     if auto_retry_max > 0 and not retry_failed:
         for attempt in range(1, auto_retry_max + 1):
             latest = load_progress(progress_file)
-            remaining_failed = latest.get('failed', [])
+            remaining_failed = [
+                f for f in latest.get('failed', []) if f.get('reason') not in GONE_REASONS
+            ]
             if not remaining_failed:
                 break
             print()
@@ -941,7 +1015,9 @@ images: {len(images)}
                 print(f"[!] 自动重试进程退出码: {result.returncode}")
                 break
         latest = load_progress(progress_file)
-        remaining_failed = latest.get('failed', [])
+        remaining_failed = [
+            f for f in latest.get('failed', []) if f.get('reason') not in GONE_REASONS
+        ]
         if remaining_failed:
             print(f"自动重试后仍失败: {len(remaining_failed)} 条")
         else:

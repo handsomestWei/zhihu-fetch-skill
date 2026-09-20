@@ -13,7 +13,9 @@
     "max_items": 20
   },
   "batch": {
-    "max_items": 20
+    "max_items": 20,
+    "delay": 1.5,
+    "delay_jitter": 0.7
   },
   "people": {
     "max_articles": 20,

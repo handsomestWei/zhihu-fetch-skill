@@ -6,6 +6,7 @@ import json
 
 from zhihu_fetch.core.limits import (
     DEFAULTS,
+    config_float,
     config_int,
     resolve_limit,
     save_config,
@@ -21,6 +22,8 @@ def test_defaults_match_skill_config():
     assert config_int("people.max_articles") == DEFAULTS["people"]["max_articles"]
     assert config_int("people.max_answers") == DEFAULTS["people"]["max_answers"]
     assert config_int("question.max_answers") == DEFAULTS["question"]["max_answers"]
+    assert abs(config_float("batch.delay") - DEFAULTS["batch"]["delay"]) < 1e-9
+    assert abs(config_float("batch.delay_jitter") - DEFAULTS["batch"]["delay_jitter"]) < 1e-9
 
 
 def test_cli_overrides_config():

@@ -177,6 +177,8 @@ def fetch_column_articles(column_id, max_items=0, cookie_str="", skip_urls=None,
             print(f"  [ERROR] HTTP {exc.code}")
             if exc.code == 403:
                 http_403 += 1
+            if exc.code == 404:
+                print("  [跳过] 专栏不存在或已失效")
             break
         except Exception as exc:
             print(f"  [ERROR] {exc}")

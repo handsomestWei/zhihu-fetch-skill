@@ -43,6 +43,8 @@ DEFAULTS = {
     },
     "batch": {
         "max_items": 20,
+        "delay": 1.5,
+        "delay_jitter": 0.7,
     },
     "people": {
         "max_articles": 20,
@@ -112,6 +114,18 @@ def config_int(dotted_key, default=0):
         return default
 
 
+def config_float(dotted_key, default=0.0):
+    cur = load_config()
+    for part in dotted_key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return default
+        cur = cur[part]
+    try:
+        return float(cur)
+    except (TypeError, ValueError):
+        return default
+
+
 def wants_unlimited(argv=None):
     argv = sys.argv if argv is None else argv
     if "--all" in argv:
@@ -170,7 +184,10 @@ def _set_dotted(data, dotted_key, value):
         cur[parts[-1]] = value.lower() == "true"
     else:
         try:
-            cur[parts[-1]] = int(value)
+            if isinstance(value, str) and ("." in value or "e" in value.lower()):
+                cur[parts[-1]] = float(value)
+            else:
+                cur[parts[-1]] = int(value)
         except (TypeError, ValueError):
             cur[parts[-1]] = value
     return data

@@ -35,7 +35,7 @@ Cookie 经常失效，想要**持久化上下文 + 保活**？
 | 问题页 | `zhihu.py question`：默认排序回答列表 |
 | 统一入口 | `zhihu.py route`：识别 `/collection/` `/columns` `/posts` `/answers` `/question/` `/p/` 回答链接 个人主页 |
 | 个人历史列表 | `zhihu.py history`：个人主页点赞/收藏动态，支持时间范围、断点续跑、互动时间元数据 |
-| 批量抓取 | `zhihu.py batch`：正文 Markdown、图片默认写入 `{输出目录}/images/`、`_progress.json` 断点续传、失败自动重试、API 回退 |
+| 批量抓取 | `zhihu.py batch`：正文 Markdown、图片、`_progress.json`；失效原文/图片自动跳过；篇间隔 `delay ± delay_jitter` 随机 |
 | Cookie | 持久化浏览器上下文 + 定时保活；失效时用 `zhihu.py relogin` 手动登录 |
 | 单篇 / 调试 | `zhihu.py fetch` / `api` / `stealth` / `interactive` |
 | Obsidian | `zhihu.py obsidian`：原文镜像到 `{Vault}/知乎收藏/`；`zhihu.py notes`：笔记到并列的 `{Vault}/知乎笔记/` |

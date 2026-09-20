@@ -252,6 +252,8 @@ def fetch_via_api_with_status(collection_id, max_items=0, cookie_str="", skip_ur
         except urllib.error.HTTPError as exc:
             last_status = exc.code
             print(f"  [ERROR] HTTP {exc.code}")
+            if exc.code == 404:
+                print("  [跳过] 收藏夹不存在或已失效")
             break
         except Exception as exc:
             print(f"  [ERROR] {exc}")

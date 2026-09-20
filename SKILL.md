@@ -1,7 +1,7 @@
 ---
 name: zhihu-fetcher
 description: "知乎收藏夹与文章内容抓取：API/Playwright 多级降级、Cookie 持久化与保活、批量正文与图片、断点续传、可选写入 Obsidian。| Zhihu collection scraping, batch article fetch, Obsidian export."
-version: "2.2.0"
+version: "2.2.1"
 user-invocable: true
 argument-hint: "[知乎链接：收藏夹/专栏/文章/回答/问题页/个人页；或输出目录、Vault 路径]"
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
@@ -100,7 +100,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebFetch
 | 裸个人页跟读 | **`Bash`** → `python scripts/zhihu.py route <people URL>` 或 `follow`；默认专栏+文章+回答+增量 |
 | 问题页回答列表 | **`Bash`** → `python scripts/zhihu.py route <question URL>` 或 `question`；再 `batch` |
 | 获取个人主页点赞/收藏历史 | **`Bash`** → `python scripts/zhihu.py history <people URL 或 slug> <起始时间ISO> <输出.json> [--until <结束时间ISO>]`；按活动时间保留 `interaction_*` 元数据，支持断点续跑 |
-| 批量抓取正文与图片 | **`Bash`** → `python scripts/zhihu.py batch <列表.json> [输出目录] [图片目录]`；默认输出目录见「路径约定」；结束写 `zhihu_run_summary.json` |
+| 批量抓取正文与图片 | **`Bash`** → `python scripts/zhihu.py batch <列表.json> [输出目录] [图片目录]`；篇间隔 **`delay ± delay_jitter` 随机**（默认 1.5±0.7 秒）；`--delay` / `--delay-jitter` 或配置 `batch.delay` / `batch.delay_jitter` |
 | 写入 Obsidian 原文镜像 | **`Bash`** → `python scripts/zhihu.py obsidian <文章目录> [Vault路径]`；写入 **`{Vault}/知乎收藏/{分类}/`**（会删工作区源 md）；Vault：命令行优先，否则 **`OBSIDIAN_VAULT`** |
 | 从镜像生成笔记 | **`Bash`** → `python scripts/zhihu.py notes [Vault路径]`；扫描「知乎收藏」，写入并列根目录 **`{Vault}/知乎笔记/`**，**不改、不删镜像**；已有笔记默认跳过，`--force` 覆盖 |
 | 写入个人历史到 Obsidian | **`Bash`** → `python scripts/zhihu.py history-obsidian <文章目录> <Vault路径> [.]`；默认写入 `{Vault}/知乎收藏/{分类}/`，按 URL 去重更新 |
@@ -251,6 +251,8 @@ python scripts/zhihu.py batch <列表文件> [输出目录] [图片目录]
 | **列表文件** | `zhihu.py collection` 产出的 JSON |
 | **输出目录** | 可选；省略时默认为 **`{workspace}/zhihu_articles_{collectionId}/`**（`collectionId` 由列表文件名推导） |
 | **图片目录** | 可选；省略时默认为 **`{输出目录}/images/`** |
+| **`--delay N`** | 基准间隔（秒）；实际为 **N ± jitter** 的均匀随机，不是固定节拍 |
+| **`--delay-jitter N`** | 随机偏移（秒）；默认 0.7。配置项 `batch.delay` / `batch.delay_jitter` |
 
 ### 目录结构示例
 
@@ -319,10 +321,11 @@ images: 5
 | 2 | **收藏夹 API 分页**：带 `include` 时列表可能被截断 | **`zhihu.py collection`** 已内置 API ↔ DOM 切换；必要时减少 `include` 或走浏览器分页 |
 | 3 | **反爬**：Headless 被识别 | Stealth、UA、间隔；必要时 **`zhihu.py interactive`** |
 | 4 | **API 正文不完整**：`include` 只给摘要 | 批量与单篇流程中已优先 **页面 DOM** 拉全文 |
-| 5 | **图片下载失败** | 正文仍保留原 URL；排查网络、Referer、过期链接 |
+| 5 | **图片下载失败 / 404** | 失效图自动跳过，正文写「图片已失效」，不把死链写进 Markdown；网络/403 仍可保留原 URL |
 | 6 | **Windows 控制台 GBK** | 脚本已 **`sys.stdout.reconfigure(encoding='utf-8')`** |
 | 7 | **批量中断** | 直接再次运行 **`python scripts/zhihu.py batch`**，依赖 **`_progress.json`** |
 | 8 | **失败项累积** | 散发失败自动记录到 `_progress.json`（含 url/reason/title/timestamp）；连续失败 ≥5 次中断并丢弃缓存；用 **`--retry-failed`** 参数可重试 |
+| 9 | **原文 404（已删除/失效）** | `batch` 记为 `http_404` 并继续，不计入连续失败、不自动重试。篇间隔默认 **1.5±0.7 秒**（随机落在 0.8–2.2）；`--delay` / `--delay-jitter` 或配置 `batch.delay` / `batch.delay_jitter`。404 多半是资源没了，不是请求太快 |
 
 ### Cookie 保活机制
 
@@ -369,7 +372,7 @@ python scripts/zhihu.py batch <列表文件> [输出目录] [图片目录] --ret
   → Cookie（含 z_c0）→ 是否跳转验证页 → python scripts/zhihu.py relogin
 
 图片失败？
-  → URL/网络/Referer → Markdown 中仍可保留链接
+  → 失效图会自动跳过；其它情况查网络/Referer/Cookie
 
 批量中途停止？
   → 确认 _progress.json → 原命令重跑
